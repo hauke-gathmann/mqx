@@ -233,6 +233,23 @@ fn delete_walk(node: &mut Node, segments: &[&str], prefix: &str, pruned: &mut Ve
     node.children.is_empty()
 }
 
+fn substring_highlights(path: &str, query: &str) -> Vec<usize> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut highlights = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = path[from..].find(query) {
+        let at = from + rel;
+        highlights.extend(at..at + query.len());
+        from = at + query.len();
+        if from >= path.len() {
+            break;
+        }
+    }
+    highlights
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::SystemTime;
@@ -392,21 +409,4 @@ mod tests {
             vec!["home/living/lamp", "lamp"]
         );
     }
-}
-
-fn substring_highlights(path: &str, query: &str) -> Vec<usize> {
-    if query.is_empty() {
-        return Vec::new();
-    }
-    let mut highlights = Vec::new();
-    let mut from = 0;
-    while let Some(rel) = path[from..].find(query) {
-        let at = from + rel;
-        highlights.extend(at..at + query.len());
-        from = at + query.len();
-        if from >= path.len() {
-            break;
-        }
-    }
-    highlights
 }

@@ -322,11 +322,23 @@ export function statusLabel(status: SessionStatusKind): string {
 export type SessionStatus = {
   profileId: string | null;
   epoch?: number;
+  rev?: number;
   status: SessionStatusKind;
+  ingestEnabled?: boolean;
   error?: string;
   broker: string;
   ramExhausted?: boolean;
 };
+
+export function isStaleSessionStatus(current: SessionStatus, incoming: SessionStatus): boolean {
+  if (incoming.epoch !== current.epoch) {
+    return false;
+  }
+  if (incoming.rev == null || current.rev == null) {
+    return false;
+  }
+  return incoming.rev < current.rev;
+}
 
 export type SessionStats = {
   profileId?: string;
@@ -419,7 +431,9 @@ export function idleSessionStatus(): SessionStatus {
   return {
     profileId: null,
     epoch: 0,
+    rev: 0,
     status: "disconnected",
+    ingestEnabled: false,
     broker: "",
   };
 }

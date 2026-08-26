@@ -351,23 +351,13 @@ pub async fn disconnect(app: AppHandle, state: State<'_, AppState>) -> Result<St
 
 fn apply_set_ingest(live: Option<&LiveHandle>, enabled: bool) -> Result<SessionStatus, String> {
     let handle = live.ok_or_else(|| "no active session".to_string())?;
-    let mut session = handle
-        .session()
-        .map_err(|_| "session lock poisoned".to_string())?;
-    session.set_ingest(enabled);
-    Ok(session.status_event())
+    handle.set_ingest(enabled)
 }
 
 #[tauri::command(rename = "setIngest")]
-pub fn set_ingest(
-    app: AppHandle,
-    state: State<AppState>,
-    enabled: bool,
-) -> Result<SessionStatus, String> {
+pub fn set_ingest(state: State<AppState>, enabled: bool) -> Result<SessionStatus, String> {
     let live = locked_live(&state)?;
-    let status = apply_set_ingest(live.as_ref(), enabled)?;
-    let _ = app.emit("session/status", status.clone());
-    Ok(status)
+    apply_set_ingest(live.as_ref(), enabled)
 }
 
 #[tauri::command(rename = "treeChildren")]

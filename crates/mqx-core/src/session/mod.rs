@@ -74,8 +74,9 @@ pub struct Session {
     last_rate: f64,
     fresh_until: Duration,
     stale_after: Duration,
-    /// Connected ⇒ true, Detached ⇒ false. ConnAck does not flip this.
+    /// Orthogonal to Connecting/Reconnecting; ConnAck maps it to Connected vs Detached.
     pub ingest_enabled: bool,
+    status_rev: u64,
 }
 
 pub struct ApplyResult {
@@ -123,6 +124,7 @@ impl Session {
             fresh_until: ui.fresh_until,
             stale_after: ui.stale_after,
             ingest_enabled: true,
+            status_rev: 0,
         }
     }
 
@@ -217,7 +219,8 @@ impl Session {
         self.error = Some(message);
     }
 
-    pub fn status_event(&self) -> SessionStatus {
+    pub fn status_event(&mut self) -> SessionStatus {
+        self.status_rev = self.status_rev.saturating_add(1);
         let error = match &self.status {
             Status::Error { msg } => Some(msg.clone()),
             _ => self.error.clone(),
@@ -225,7 +228,9 @@ impl Session {
         SessionStatus {
             profile_id: Some(self.id.clone()),
             epoch: self.epoch,
+            rev: self.status_rev,
             status: self.status.kind(),
+            ingest_enabled: self.ingest_enabled,
             error,
             broker: self.broker.clone(),
             ram_exhausted: self.tree.ram_exhausted(),
@@ -668,6 +673,29 @@ mod tests {
         session.on_connack();
         assert!(matches!(session.status, Status::Connected));
         assert!(session.ingest_enabled);
+    }
+
+    #[test]
+    fn status_event_carries_ingest_flag_and_monotonic_rev() {
+        let mut session = session();
+        let first = session.status_event();
+        assert!(first.ingest_enabled);
+        assert_eq!(first.rev, 1);
+        assert_eq!(first.status, StatusKind::Connecting);
+
+        session.set_status(Status::Connected);
+        session.set_ingest(false);
+        session.set_io_error("connection lost".into());
+        let reconnecting = session.status_event();
+        assert!(!reconnecting.ingest_enabled);
+        assert_eq!(reconnecting.status, StatusKind::Reconnecting);
+        assert_eq!(reconnecting.rev, 2);
+
+        session.on_connack();
+        let detached = session.status_event();
+        assert!(!detached.ingest_enabled);
+        assert_eq!(detached.status, StatusKind::Detached);
+        assert!(detached.rev > reconnecting.rev);
     }
 
     #[test]

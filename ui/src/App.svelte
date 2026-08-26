@@ -32,6 +32,7 @@
     ramLimitGb,
     getLastUsedProfileId,
     idleSessionStatus,
+    isStaleSessionStatus,
     sessionOpen as isSessionOpen,
     setLastUsedProfileId,
     statusLabel,
@@ -65,7 +66,7 @@
   const showHeader = $derived(sessionOpen || sessionStatus.status === "error");
   const showExplorer = $derived(sessionOpen);
   const showPicker = $derived(!sessionOpen && sessionStatus.status !== "error");
-  const ingestEnabled = $derived(sessionStatus.status !== "detached");
+  const ingestEnabled = $derived(sessionStatus.ingestEnabled ?? sessionStatus.status !== "detached");
 
   const lastUsedName = $derived(
     lastUsedId ? (profiles.find((profile) => profile.id === lastUsedId)?.name ?? null) : null,
@@ -224,6 +225,7 @@
     sessionStatus = {
       profileId: id,
       status: "connecting",
+      ingestEnabled: true,
       broker: profile ? brokerLabel(profile) : "",
     };
     stats = null;
@@ -270,6 +272,23 @@
     }
   }
 
+  function acceptStatus(payload: SessionStatus): boolean {
+    if (payload.profileId !== wantedProfileId) {
+      return false;
+    }
+    if (wantedEpoch != null && payload.epoch !== wantedEpoch) {
+      return false;
+    }
+    if (isStaleSessionStatus(sessionStatus, payload)) {
+      return false;
+    }
+    sessionStatus = payload;
+    if (payload.status === "disconnected" || payload.status === "error") {
+      stats = null;
+    }
+    return true;
+  }
+
   async function applyIngest(enabled: boolean) {
     if (!isSessionOpen(sessionStatus.status)) {
       return;
@@ -277,7 +296,7 @@
     error = null;
     busy = true;
     try {
-      sessionStatus = await setIngest(enabled);
+      acceptStatus(await setIngest(enabled));
     } catch (err) {
       error = errorMessage(err);
     } finally {
@@ -337,17 +356,7 @@
     void (async () => {
       try {
         const statusUnlisten = await listen<SessionStatus>("session/status", (event) => {
-          const payload = event.payload;
-          if (payload.profileId !== wantedProfileId) {
-            return;
-          }
-          if (wantedEpoch != null && payload.epoch !== wantedEpoch) {
-            return;
-          }
-          sessionStatus = payload;
-          if (payload.status === "disconnected" || payload.status === "error") {
-            stats = null;
-          }
+          acceptStatus(event.payload);
         });
         const statsUnlisten = await listen<SessionStats>("session/stats", (event) => {
           const payload = event.payload;

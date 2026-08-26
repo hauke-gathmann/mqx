@@ -23,7 +23,11 @@ pub struct SessionStatus {
     pub profile_id: Option<String>,
     #[serde(default)]
     pub epoch: u64,
+    /// Monotonic per session; UI ignores a lower rev for the same epoch.
+    #[serde(default)]
+    pub rev: u64,
     pub status: StatusKind,
+    pub ingest_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub broker: String,
@@ -36,7 +40,9 @@ impl SessionStatus {
         Self {
             profile_id: None,
             epoch: 0,
+            rev: 0,
             status: StatusKind::Disconnected,
+            ingest_enabled: false,
             error: None,
             broker: String::new(),
             ram_exhausted: false,

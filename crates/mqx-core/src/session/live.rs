@@ -62,6 +62,7 @@ pub struct LiveHandle {
     client: AsyncClient,
     task: Mutex<Option<JoinHandle<()>>>,
     epoch: u64,
+    events: mpsc::UnboundedSender<SessionEvent>,
 }
 
 impl LiveHandle {
@@ -74,7 +75,7 @@ impl LiveHandle {
         let request_cap = profile.subscriptions.len().saturating_add(16).max(64);
         let (client, eventloop) = AsyncClient::new(options, request_cap);
         let epoch = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
-        let session = Session::new(&profile, client.clone(), ui, epoch);
+        let mut session = Session::new(&profile, client.clone(), ui, epoch);
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let _ = event_tx.send(SessionEvent::Status(session.status_event()));
 
@@ -99,7 +100,7 @@ impl LiveHandle {
             Arc::clone(&session),
             client.clone(),
             eventloop,
-            event_tx,
+            event_tx.clone(),
             shutdown_rx,
             raw_tx,
             decoded_rx,
@@ -112,6 +113,7 @@ impl LiveHandle {
             client,
             task: Mutex::new(Some(task)),
             epoch,
+            events: event_tx,
         };
 
         Ok((handle, event_rx))
@@ -123,6 +125,18 @@ impl LiveHandle {
 
     pub fn session(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Session>> {
         self.session.lock()
+    }
+
+    pub fn set_ingest(&self, enabled: bool) -> std::result::Result<SessionStatus, String> {
+        let status = {
+            let mut session = self
+                .session()
+                .map_err(|_| "session lock poisoned".to_string())?;
+            session.set_ingest(enabled);
+            session.status_event()
+        };
+        let _ = self.events.send(SessionEvent::Status(status.clone()));
+        Ok(status)
     }
 
     pub async fn stop(self) {
@@ -187,13 +201,15 @@ async fn run_live(
                 match event {
                     Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                         backoff = BACKOFF_START;
-                        let subs = {
+                        let (subs, status) = {
                             let mut guard = lock(&session);
                             guard.on_connack();
-                            guard.subscriptions().to_vec()
+                            let subs = guard.subscriptions().to_vec();
+                            let status = guard.status_event();
+                            (subs, status)
                         };
                         pending_subs = subs.into();
-                        emit_status(&session, &event_tx);
+                        let _ = event_tx.send(SessionEvent::Status(status));
                     }
                     Ok(Event::Incoming(Incoming::Publish(publish))) => {
                         let inbound = Inbound {
@@ -203,15 +219,23 @@ async fn run_live(
                             qos: qos_from_rumqttc(publish.qos),
                             timestamp: SystemTime::now(),
                         };
-                        let ingest = lock(&session).ingest_enabled;
-                        if ingest {
-                            match raw_tx.try_send(inbound) {
-                                Ok(()) => {}
-                                Err(TrySendError::Full(_)) => {
-                                    debug!("dropping inbound; decode queue full");
+                        let disconnected = {
+                            let guard = lock(&session);
+                            if !guard.ingest_enabled {
+                                false
+                            } else {
+                                match raw_tx.try_send(inbound) {
+                                    Ok(()) => false,
+                                    Err(TrySendError::Full(_)) => {
+                                        debug!("dropping inbound; decode queue full");
+                                        false
+                                    }
+                                    Err(TrySendError::Disconnected(_)) => true,
                                 }
-                                Err(TrySendError::Disconnected(_)) => break,
                             }
+                        };
+                        if disconnected {
+                            break;
                         }
                     }
                     Ok(_) => {}

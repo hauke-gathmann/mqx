@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::error::{Error, Result};
 
@@ -12,6 +12,19 @@ const APP_NAME: &str = "mqx";
 
 /// Default in-memory topic-store cap (12 GiB).
 pub const DEFAULT_RAM_LIMIT_BYTES: u64 = 12 * 1024 * 1024 * 1024;
+pub const RAM_LIMIT_MIN_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+pub const RAM_LIMIT_MAX_BYTES: u64 = 128 * 1024 * 1024 * 1024;
+
+pub fn clamp_ram_limit_bytes(bytes: u64) -> u64 {
+    bytes.clamp(RAM_LIMIT_MIN_BYTES, RAM_LIMIT_MAX_BYTES)
+}
+
+fn deserialize_ram_limit<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(clamp_ram_limit_bytes(u64::deserialize(deserializer)?))
+}
 
 #[derive(Clone, Debug)]
 pub struct AppDirs {
@@ -70,7 +83,10 @@ pub struct UiConfig {
     pub fresh_until: Duration,
     #[serde(default = "defaults::stale_after", with = "humantime_serde")]
     pub stale_after: Duration,
-    #[serde(default = "defaults::ram_limit_bytes")]
+    #[serde(
+        default = "defaults::ram_limit_bytes",
+        deserialize_with = "deserialize_ram_limit"
+    )]
     pub ram_limit_bytes: u64,
 }
 
@@ -336,5 +352,18 @@ mod tests {
         assert_eq!(parsed.ui.stale_after, Duration::from_secs(5));
         assert_eq!(parsed.keys.search, 'f');
         assert_eq!(parsed.keys.ignore, '?');
+    }
+
+    #[test]
+    fn ram_limit_bytes_clamped_to_product_range() {
+        let low: AppConfig = toml::from_str("[ui]\nram_limit_bytes = 1\n").unwrap();
+        assert_eq!(low.ui.ram_limit_bytes, RAM_LIMIT_MIN_BYTES);
+        let high: AppConfig = toml::from_str("[ui]\nram_limit_bytes = 999999999999999\n").unwrap();
+        assert_eq!(high.ui.ram_limit_bytes, RAM_LIMIT_MAX_BYTES);
+        assert_eq!(clamp_ram_limit_bytes(0), RAM_LIMIT_MIN_BYTES);
+        assert_eq!(
+            clamp_ram_limit_bytes(DEFAULT_RAM_LIMIT_BYTES),
+            DEFAULT_RAM_LIMIT_BYTES
+        );
     }
 }

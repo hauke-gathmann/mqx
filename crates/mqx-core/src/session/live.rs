@@ -280,7 +280,7 @@ async fn run_live(
                 let rate = window_count as f64;
                 window_count = 0;
                 let stats = {
-                    let guard = lock(&session);
+                    let mut guard = lock(&session);
                     guard.stats(rate)
                 };
                 let _ = event_tx.send(SessionEvent::Stats(stats));

@@ -254,8 +254,12 @@
     return true;
   }
 
-  function isNotFound(err: unknown): boolean {
-    return /not found/i.test(errorMessage(err));
+  function isTopicNotFound(err: unknown): boolean {
+    return /^topic .+ not found$/i.test(errorMessage(err));
+  }
+
+  function isMessageNotFound(err: unknown): boolean {
+    return /^message .+ not found on /i.test(errorMessage(err));
   }
 
   function mutate(fn: (model: TreeModel) => void) {
@@ -276,9 +280,14 @@
     const cleared = current
       ? batch.upserts.some((node) => node.path === current && !node.hasPayload)
       : false;
+    const selectedUpserted = current
+      ? batch.upserts.some((node) => node.path === current && node.hasPayload)
+      : false;
     mutate((model) => applyBatch(model, batch.upserts, batch.deletes));
     if ((gone || cleared) && selected) {
       void clearSelection();
+    } else if (selectedUpserted) {
+      void refreshSelectedHistory();
     }
   }
 
@@ -402,7 +411,7 @@
       if (token !== seq) {
         return;
       }
-      if (isNotFound(err)) {
+      if (isTopicNotFound(err)) {
         void clearSelection();
         return;
       }
@@ -456,7 +465,7 @@
     };
   }
 
-  async function openHistory(index: number) {
+  async function openHistory(index: number, recovered = false) {
     if (!selected) {
       return;
     }
@@ -473,7 +482,46 @@
       if (token !== seq || selected !== topic) {
         return;
       }
-      if (isNotFound(err)) {
+      if (isMessageNotFound(err)) {
+        if (!recovered) {
+          void refreshSelectedHistory();
+        }
+        return;
+      }
+      if (isTopicNotFound(err)) {
+        void clearSelection();
+        return;
+      }
+      error = errorMessage(err);
+    }
+  }
+
+  async function refreshSelectedHistory() {
+    if (!selected) {
+      return;
+    }
+    const topic = selected;
+    const token = seq;
+    try {
+      const [nextMeta, nextHistory] = await Promise.all([
+        getHistoryMeta(topic),
+        listHistory(topic),
+      ]);
+      if (token !== seq || selected !== topic) {
+        return;
+      }
+      meta = nextMeta;
+      history = nextHistory;
+      const clamped = clampHistoryIndex(nextHistory, nextMeta.latestIndex, historyIndex);
+      if (clamped !== historyIndex) {
+        historyIndex = clamped;
+        void openHistory(clamped, true);
+      }
+    } catch (err) {
+      if (token !== seq || selected !== topic) {
+        return;
+      }
+      if (isTopicNotFound(err)) {
         void clearSelection();
         return;
       }
@@ -541,7 +589,7 @@
       if (token !== seq || stamp !== liveStamp) {
         return;
       }
-      if (isNotFound(err)) {
+      if (isTopicNotFound(err)) {
         void clearSelection();
         return;
       }

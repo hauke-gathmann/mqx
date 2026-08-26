@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use mqx_core::{
     ConnectionProfile, HistoryItemDto, HistoryMeta, JqApplyResult, JqHistory, LiveHandle,
     MessageDto, ProfileStore, ProfileSummary, SearchHitDto, SearchMode, SessionEvent,
-    SessionStatus, TreeNodeDto,
+    SessionStatus, TreeBatch, TreeNodeDto, clamp_ram_limit_bytes,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -113,6 +113,7 @@ pub fn set_ram_limit(
     state: State<AppState>,
     bytes: u64,
 ) -> Result<UiSettings, String> {
+    let bytes = clamp_ram_limit_bytes(bytes);
     {
         let mut config = locked_config(&state)?;
         if config.ui.ram_limit_bytes != bytes {
@@ -124,11 +125,30 @@ pub fn set_ram_limit(
         && let Some(handle) = live.as_ref()
         && let Ok(mut session) = handle.session()
     {
-        session.set_ram_limit(bytes);
+        let upserts = session.set_ram_limit(bytes);
         let _ = app.emit("session/status", session.status_event());
+        let _ = app.emit("session/stats", session.stats_snapshot());
+        if !upserts.is_empty() {
+            let _ = app.emit(
+                "tree/batch",
+                TreeBatch {
+                    profile_id: session.id.clone(),
+                    epoch: session.epoch(),
+                    upserts,
+                    deletes: Vec::new(),
+                },
+            );
+        }
     }
     let config = locked_config(&state)?;
     Ok(ui_settings(&config))
+}
+
+fn missing_payload_err(session: &mqx_core::Session, topic: &str, index: Option<usize>) -> String {
+    match index {
+        Some(seq) if session.has_leaf(topic) => format!("message {seq} not found on {topic}"),
+        _ => format!("topic {topic} not found"),
+    }
 }
 
 fn with_session_mut<R>(
@@ -362,7 +382,7 @@ pub fn get_message(
     with_session(&state, |session| {
         session
             .get_message(&topic, index)
-            .ok_or_else(|| format!("topic {topic} not found"))
+            .ok_or_else(|| missing_payload_err(session, &topic, index))
     })
 }
 
@@ -411,7 +431,7 @@ pub fn apply_jq(
     let result = with_session(&state, |session| {
         session
             .apply_jq(&topic, index, &filter)
-            .ok_or_else(|| format!("topic {topic} not found"))
+            .ok_or_else(|| missing_payload_err(session, &topic, index))
     })?;
     if result.should_commit() {
         let mut history = locked_jq(&state)?;

@@ -69,6 +69,7 @@ pub struct Session {
     error: Option<String>,
     messages_total: u64,
     epoch: u64,
+    last_rate: f64,
     fresh_until: Duration,
     stale_after: Duration,
 }
@@ -114,6 +115,7 @@ impl Session {
             error: None,
             messages_total: 0,
             epoch,
+            last_rate: 0.0,
             fresh_until: ui.fresh_until,
             stale_after: ui.stale_after,
         }
@@ -151,8 +153,13 @@ impl Session {
         self.tree.ram_exhausted()
     }
 
-    pub fn set_ram_limit(&mut self, bytes: u64) {
+    pub fn has_leaf(&self, topic: &str) -> bool {
+        self.tree.get(topic).is_some()
+    }
+
+    pub fn set_ram_limit(&mut self, bytes: u64) -> Vec<TreeNodeDto> {
         self.tree.set_ram_limit(bytes);
+        self.take_evicted_upserts()
     }
 
     pub fn set_status(&mut self, status: Status) {
@@ -190,13 +197,18 @@ impl Session {
         }
     }
 
-    pub fn stats(&self, messages_per_sec: f64) -> SessionStats {
+    pub fn stats(&mut self, messages_per_sec: f64) -> SessionStats {
+        self.last_rate = messages_per_sec;
+        self.stats_snapshot()
+    }
+
+    pub fn stats_snapshot(&self) -> SessionStats {
         SessionStats {
             profile_id: self.id.clone(),
             epoch: self.epoch,
             topics: self.tree.topic_count() as u64,
             messages_total: self.messages_total,
-            messages_per_sec,
+            messages_per_sec: self.last_rate,
             stored_bytes: self.tree.stored_bytes(),
             ram_limit_bytes: self.tree.ram_limit(),
         }
@@ -315,6 +327,12 @@ impl Session {
             }
         }
 
+        for dto in self.take_evicted_upserts() {
+            if !upserts.iter().any(|existing| existing.path == dto.path) {
+                upserts.push(dto);
+            }
+        }
+
         ApplyResult {
             topic_message: emitted,
             upserts,
@@ -326,6 +344,15 @@ impl Session {
         self.tree = TopicTree::with_limits(self.tree.buffer_size(), self.tree.ram_limit());
         self.selected = None;
         self.messages_total = 0;
+        self.last_rate = 0.0;
+    }
+
+    fn take_evicted_upserts(&mut self) -> Vec<TreeNodeDto> {
+        self.tree
+            .take_evicted()
+            .into_iter()
+            .filter_map(|topic| self.node_dto(&topic))
+            .collect()
     }
 
     fn collect_path_dtos(&self, topic: &str) -> Vec<TreeNodeDto> {
@@ -617,5 +644,38 @@ mod tests {
         assert!(session.get_message("c", None).is_none());
         assert_eq!(session.stats(0.0).messages_total, 3);
         assert!(session.status_event().ram_exhausted);
+    }
+
+    #[test]
+    fn empty_retain_while_exhausted_allows_ingest_again() {
+        let mut session = session();
+        session.ingest(msg("a", b"hello", false));
+        session.ingest(msg("b", b"world", false));
+        let stored = session.stats(0.0).stored_bytes;
+        session.set_ram_limit(stored.saturating_sub(1));
+        assert!(session.ram_exhausted());
+
+        let result = session.ingest(msg("a", b"", true));
+        assert!(result.deletes.contains(&"a".to_string()));
+        assert!(!session.ram_exhausted());
+        assert!(session.get_message("a", None).is_none());
+
+        let result = session.ingest(msg("c", b"ok", false));
+        assert!(result.upserts.iter().any(|node| node.path == "c"));
+        assert!(session.get_message("c", None).is_some());
+    }
+
+    #[test]
+    fn set_ram_limit_returns_upserts_for_evicted_topics() {
+        let mut session = session();
+        session.ingest(msg("a", b"1", false));
+        session.ingest(msg("a", b"2", false));
+        session.ingest(msg("a", b"3", false));
+        session.ingest(msg("b", b"1", false));
+        session.ingest(msg("b", b"2", false));
+        session.ingest(msg("b", b"3", false));
+        let upserts = session.set_ram_limit(900);
+        assert!(upserts.iter().any(|node| node.path == "a"));
+        assert_eq!(session.get_history_meta("a").unwrap().count, 1);
     }
 }

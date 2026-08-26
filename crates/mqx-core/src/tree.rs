@@ -18,6 +18,7 @@ pub struct TopicTree {
     ram_exhausted: bool,
     extra_index: BTreeMap<(SystemTime, u64), String>,
     next_seq: u64,
+    evicted: HashSet<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -77,6 +78,7 @@ impl TopicTree {
             ram_exhausted: false,
             extra_index: BTreeMap::new(),
             next_seq: 0,
+            evicted: HashSet::new(),
         }
     }
 
@@ -99,6 +101,10 @@ impl TopicTree {
     pub fn set_ram_limit(&mut self, ram_limit: u64) {
         self.ram_limit = ram_limit;
         self.evict();
+    }
+
+    pub fn take_evicted(&mut self) -> Vec<String> {
+        self.evicted.drain().collect()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -280,11 +286,18 @@ impl TopicTree {
         self.node_mut(topic)?.leaf.as_mut()?.history.pop_front()
     }
 
+    fn take_extra(&mut self, topic: &str, seq: u64) -> Option<Message> {
+        let history = &mut self.node_mut(topic)?.leaf.as_mut()?.history;
+        let pos = history.iter().position(|message| message.seq == seq)?;
+        history.remove(pos)
+    }
+
     fn drop_topic_oldest_extra(&mut self, topic: &str) {
         if let Some(dropped) = self.pop_history_front(topic) {
             self.extra_index
                 .remove(&(dropped.inbound.timestamp, dropped.seq));
             self.stored_bytes = self.stored_bytes.saturating_sub(message_bytes(&dropped));
+            self.evicted.insert(topic.to_string());
         }
     }
 
@@ -306,12 +319,13 @@ impl TopicTree {
         }
         let target = (u128::from(self.ram_limit) * 9 / 10) as u64;
         while self.stored_bytes > target {
-            let Some((_, topic)) = self.extra_index.pop_first() else {
+            let Some(((_, seq), topic)) = self.extra_index.pop_first() else {
                 self.set_ram_exhausted(self.stored_bytes > self.ram_limit);
                 return;
             };
-            if let Some(dropped) = self.pop_history_front(&topic) {
+            if let Some(dropped) = self.take_extra(&topic, seq) {
                 self.stored_bytes = self.stored_bytes.saturating_sub(message_bytes(&dropped));
+                self.evicted.insert(topic);
             }
         }
         self.set_ram_exhausted(self.stored_bytes > self.ram_limit);
@@ -654,5 +668,43 @@ mod tests {
         assert_eq!(tree.get("t").unwrap().latest.seq as usize, latest_seq);
         assert!(tree.get_message("t", Some(9999)).is_none());
         assert_eq!(tree.get_message("t", None).unwrap().text, "c");
+    }
+
+    #[test]
+    fn ram_evict_drops_indexed_seq_not_history_front() {
+        let mut tree = TopicTree::new(0);
+        tree.upsert(msg_at("t", b"old", 10));
+        tree.upsert(msg_at("t", b"mid", 1));
+        tree.upsert(msg_at("t", b"new", 2));
+        assert_eq!(tree.get("t").unwrap().history[0].text, "old");
+
+        tree.set_ram_limit(500);
+        let leaf = tree.get("t").unwrap();
+        assert_eq!(leaf.history.len(), 1);
+        assert_eq!(leaf.history[0].text, "old");
+        assert_eq!(leaf.latest.text, "new");
+        assert!(tree.get_message("t", Some(1)).is_none());
+    }
+
+    #[test]
+    fn empty_retain_while_exhausted_frees_budget() {
+        let mut tree = TopicTree::new(0);
+        tree.upsert(msg("a", b"hello", false));
+        tree.upsert(msg("b", b"world", false));
+        let stored = tree.stored_bytes();
+        tree.set_ram_limit(stored.saturating_sub(1));
+        assert!(tree.ram_exhausted());
+
+        assert_eq!(
+            tree.upsert(msg("a", b"", true)),
+            UpsertOutcome::Deleted {
+                pruned: vec!["a".into()]
+            }
+        );
+        assert!(tree.get("a").is_none());
+        assert!(tree.get("b").is_some());
+        assert!(!tree.ram_exhausted());
+        assert_eq!(tree.upsert(msg("c", b"ok", false)), UpsertOutcome::Inserted);
+        assert!(tree.get("c").is_some());
     }
 }

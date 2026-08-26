@@ -39,6 +39,7 @@ pub struct Inbound {
     pub payload: Bytes,
     pub retain: bool,
     pub qos: QoS,
+    pub dup: bool,
     pub timestamp: SystemTime,
 }
 
@@ -164,6 +165,7 @@ mod tests {
             payload: Bytes::copy_from_slice(payload),
             retain: false,
             qos: QoS::AtMostOnce,
+            dup: false,
             timestamp: SystemTime::now(),
         }
     }

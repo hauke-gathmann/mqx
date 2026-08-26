@@ -217,6 +217,7 @@ async fn run_live(
                             payload: publish.payload,
                             retain: publish.retain,
                             qos: qos_from_rumqttc(publish.qos),
+                            dup: publish.dup,
                             timestamp: SystemTime::now(),
                         };
                         let disconnected = {

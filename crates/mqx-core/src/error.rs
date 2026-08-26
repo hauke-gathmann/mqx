@@ -34,6 +34,8 @@ pub enum Error {
     Tls(String),
     #[error("{0}")]
     Mqtt(String),
+    #[error("{0}")]
+    Recording(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

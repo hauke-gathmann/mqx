@@ -434,6 +434,7 @@ mod tests {
             payload: Bytes::copy_from_slice(payload),
             retain,
             qos: QoS::AtMostOnce,
+            dup: false,
             timestamp: SystemTime::now(),
         })
     }

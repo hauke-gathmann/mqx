@@ -5,6 +5,7 @@ mod error;
 mod jq;
 mod message;
 mod profiles;
+mod record;
 mod session;
 mod tree;
 
@@ -18,6 +19,10 @@ pub use message::{Format, Freshness, Inbound, Message, QoS, decode_inbound};
 pub use profiles::{
     ConnectionProfile, LastWill, ProfileStore, ProfileSummary, ProfileView, Protocol,
     SessionConfig, Subscription, TlsConfig,
+};
+pub use record::{
+    MAX_LINE_BYTES, RECORDING_KIND, RecordEvent, RecordingHeader, RecordingLine, load_recording,
+    load_recording_from, sniff_line, wait_duration,
 };
 pub use session::{
     ApplyResult, HistoryItemDto, HistoryMeta, JqApplyResult, JqErrorDto, LiveHandle, MessageDto,

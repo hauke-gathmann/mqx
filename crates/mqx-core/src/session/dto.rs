@@ -269,6 +269,7 @@ mod tests {
             payload: Bytes::from_static(br#"{"on":true}"#),
             retain: true,
             qos: QoS::AtLeastOnce,
+            dup: false,
             timestamp: UNIX_EPOCH,
         });
         let dto = MessageDto::from_message(&message);
@@ -296,6 +297,7 @@ mod tests {
             payload: Bytes::from_static(b"hello"),
             retain: false,
             qos: QoS::AtMostOnce,
+            dup: false,
             timestamp: UNIX_EPOCH,
         });
         let dto = MessageDto::from_message(&message);

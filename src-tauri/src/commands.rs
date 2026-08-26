@@ -70,8 +70,17 @@ fn normalize_theme(theme: &str) -> Result<String, String> {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UiSettings {
     theme: String,
+    ram_limit_bytes: u64,
+}
+
+fn ui_settings(config: &mqx_core::AppConfig) -> UiSettings {
+    UiSettings {
+        theme: normalize_theme(&config.ui.theme).unwrap_or_else(|_| "dark".into()),
+        ram_limit_bytes: config.ui.ram_limit_bytes,
+    }
 }
 
 pub fn persist_theme(state: &AppState, theme: &str) -> Result<String, String> {
@@ -88,16 +97,38 @@ pub fn persist_theme(state: &AppState, theme: &str) -> Result<String, String> {
 #[tauri::command(rename = "getSettings")]
 pub fn get_settings(state: State<AppState>) -> Result<UiSettings, String> {
     let config = locked_config(&state)?;
-    Ok(UiSettings {
-        theme: normalize_theme(&config.ui.theme).unwrap_or_else(|_| "dark".into()),
-    })
+    Ok(ui_settings(&config))
 }
 
 #[tauri::command(rename = "setTheme")]
 pub fn set_theme(state: State<AppState>, theme: String) -> Result<UiSettings, String> {
-    Ok(UiSettings {
-        theme: persist_theme(&state, &theme)?,
-    })
+    persist_theme(&state, &theme)?;
+    let config = locked_config(&state)?;
+    Ok(ui_settings(&config))
+}
+
+#[tauri::command(rename = "setRamLimit")]
+pub fn set_ram_limit(
+    app: AppHandle,
+    state: State<AppState>,
+    bytes: u64,
+) -> Result<UiSettings, String> {
+    {
+        let mut config = locked_config(&state)?;
+        if config.ui.ram_limit_bytes != bytes {
+            config.ui.ram_limit_bytes = bytes;
+            config.save().map_err(err)?;
+        }
+    }
+    if let Ok(live) = locked_live(&state)
+        && let Some(handle) = live.as_ref()
+        && let Ok(mut session) = handle.session()
+    {
+        session.set_ram_limit(bytes);
+        let _ = app.emit("session/status", session.status_event());
+    }
+    let config = locked_config(&state)?;
+    Ok(ui_settings(&config))
 }
 
 fn with_session_mut<R>(

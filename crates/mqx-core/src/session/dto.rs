@@ -26,6 +26,8 @@ pub struct SessionStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub broker: String,
+    #[serde(default)]
+    pub ram_exhausted: bool,
 }
 
 impl SessionStatus {
@@ -36,6 +38,7 @@ impl SessionStatus {
             status: StatusKind::Disconnected,
             error: None,
             broker: String::new(),
+            ram_exhausted: false,
         }
     }
 }
@@ -49,6 +52,10 @@ pub struct SessionStats {
     pub topics: u64,
     pub messages_total: u64,
     pub messages_per_sec: f64,
+    #[serde(default)]
+    pub stored_bytes: u64,
+    #[serde(default)]
+    pub ram_limit_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -113,9 +120,9 @@ pub struct HistoryItemDto {
 }
 
 impl HistoryItemDto {
-    pub fn from_message(index: usize, message: &Message) -> Self {
+    pub fn from_message(message: &Message) -> Self {
         Self {
-            index,
+            index: message.seq as usize,
             timestamp: system_time_ms(message.inbound.timestamp),
             format: message.format,
             retain: message.inbound.retain,

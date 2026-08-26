@@ -10,6 +10,9 @@ use crate::error::{Error, Result};
 
 const APP_NAME: &str = "mqx";
 
+/// Default in-memory topic-store cap (12 GiB).
+pub const DEFAULT_RAM_LIMIT_BYTES: u64 = 12 * 1024 * 1024 * 1024;
+
 #[derive(Clone, Debug)]
 pub struct AppDirs {
     pub config_dir: PathBuf,
@@ -67,6 +70,8 @@ pub struct UiConfig {
     pub fresh_until: Duration,
     #[serde(default = "defaults::stale_after", with = "humantime_serde")]
     pub stale_after: Duration,
+    #[serde(default = "defaults::ram_limit_bytes")]
+    pub ram_limit_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -84,6 +89,7 @@ impl Default for UiConfig {
             buffer_size: 0,
             fresh_until: defaults::fresh_until(),
             stale_after: defaults::stale_after(),
+            ram_limit_bytes: defaults::ram_limit_bytes(),
         }
     }
 }
@@ -238,6 +244,7 @@ fn from_legacy_str(content: &str) -> std::result::Result<AppConfig, toml::de::Er
             buffer_size: legacy.topics.buffer_size,
             fresh_until: legacy.topics.fresh_until,
             stale_after: legacy.topics.stale_after,
+            ram_limit_bytes: defaults::ram_limit_bytes(),
         },
         keys: KeyConfig {
             search: legacy.keys.search,
@@ -268,6 +275,10 @@ mod defaults {
     pub fn ignore() -> char {
         '?'
     }
+
+    pub fn ram_limit_bytes() -> u64 {
+        super::DEFAULT_RAM_LIMIT_BYTES
+    }
 }
 
 #[cfg(test)]
@@ -292,6 +303,7 @@ mod tests {
         assert_eq!(parsed.ui.theme, "light");
         assert_eq!(parsed.ui.buffer_size, 4);
         assert_eq!(parsed.ui.fresh_until, Duration::from_millis(500));
+        assert_eq!(parsed.ui.ram_limit_bytes, DEFAULT_RAM_LIMIT_BYTES);
         assert_eq!(parsed.keys.search, 's');
         assert_eq!(parsed.keys.ignore, '?');
     }

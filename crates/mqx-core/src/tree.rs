@@ -1,14 +1,23 @@
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::{
+    collections::{BTreeMap, HashSet, VecDeque},
+    time::SystemTime,
+};
 
 use serde::{Deserialize, Serialize};
+use tracing::{debug, warn};
 
-use crate::message::Message;
+use crate::message::{Format, Message};
 
 #[derive(Clone, Debug)]
 pub struct TopicTree {
     root: Node,
     index: HashSet<String>,
     buffer_size: usize,
+    ram_limit: u64,
+    stored_bytes: u64,
+    ram_exhausted: bool,
+    extra_index: BTreeMap<(SystemTime, u64), String>,
+    next_seq: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -49,19 +58,47 @@ pub enum UpsertOutcome {
     Deleted {
         pruned: Vec<String>,
     },
+    /// Ingest skipped because the store is over budget with no extras left.
+    Ignored,
 }
 
 impl TopicTree {
     pub fn new(buffer_size: usize) -> Self {
+        Self::with_limits(buffer_size, crate::config::DEFAULT_RAM_LIMIT_BYTES)
+    }
+
+    pub fn with_limits(buffer_size: usize, ram_limit: u64) -> Self {
         Self {
             root: Node::default(),
             index: HashSet::new(),
             buffer_size,
+            ram_limit,
+            stored_bytes: 0,
+            ram_exhausted: false,
+            extra_index: BTreeMap::new(),
+            next_seq: 0,
         }
     }
 
     pub fn buffer_size(&self) -> usize {
         self.buffer_size
+    }
+
+    pub fn ram_limit(&self) -> u64 {
+        self.ram_limit
+    }
+
+    pub fn stored_bytes(&self) -> u64 {
+        self.stored_bytes
+    }
+
+    pub fn ram_exhausted(&self) -> bool {
+        self.ram_exhausted
+    }
+
+    pub fn set_ram_limit(&mut self, ram_limit: u64) {
+        self.ram_limit = ram_limit;
+        self.evict();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -100,6 +137,8 @@ impl TopicTree {
         let delete = message.inbound.retain && message.inbound.payload.is_empty();
         if delete {
             self.delete_leaf(&message.inbound.topic)
+        } else if self.ram_exhausted {
+            UpsertOutcome::Ignored
         } else {
             self.insert_leaf(message)
         }
@@ -141,8 +180,75 @@ impl TopicTree {
             .collect()
     }
 
-    fn insert_leaf(&mut self, message: Message) -> UpsertOutcome {
+    fn insert_leaf(&mut self, mut message: Message) -> UpsertOutcome {
+        message.seq = self.next_seq;
+        self.next_seq = self.next_seq.saturating_add(1);
+        let bytes = message_bytes(&message);
         let topic = message.inbound.topic.clone();
+
+        let buffer_size = self.buffer_size;
+        let (existed, extra_key, overflow) = {
+            let node = self.ensure_node(&topic);
+            let existed = node.leaf.is_some();
+            let mut extra_key = None;
+            let mut overflow = false;
+            match &mut node.leaf {
+                Some(leaf) => {
+                    let previous = std::mem::replace(&mut leaf.latest, message);
+                    extra_key = Some((previous.inbound.timestamp, previous.seq));
+                    leaf.history.push_back(previous);
+                    leaf.received = leaf.received.saturating_add(1);
+                    overflow = buffer_size > 0 && leaf.message_count() > buffer_size;
+                }
+                None => {
+                    node.leaf = Some(Leaf {
+                        latest: message,
+                        history: VecDeque::new(),
+                        received: 1,
+                    });
+                }
+            }
+            (existed, extra_key, overflow)
+        };
+
+        if let Some(key) = extra_key {
+            self.extra_index.insert(key, topic.clone());
+        }
+        self.stored_bytes = self.stored_bytes.saturating_add(bytes);
+        if overflow {
+            self.drop_topic_oldest_extra(&topic);
+        }
+        self.index.insert(topic);
+        self.evict();
+        if existed {
+            UpsertOutcome::Updated
+        } else {
+            UpsertOutcome::Inserted
+        }
+    }
+
+    fn delete_leaf(&mut self, topic: &str) -> UpsertOutcome {
+        let leaf = if topic.is_empty() {
+            self.root.leaf.take()
+        } else {
+            self.node_mut(topic).and_then(|node| node.leaf.take())
+        };
+        if let Some(leaf) = leaf {
+            self.release_leaf(&leaf);
+        }
+        self.index.remove(topic);
+        self.set_ram_exhausted(self.stored_bytes > self.ram_limit && self.extra_index.is_empty());
+
+        let mut pruned = Vec::new();
+        if topic.is_empty() {
+            return UpsertOutcome::Deleted { pruned };
+        }
+        let segments: Vec<&str> = topic.split('/').collect();
+        delete_walk(&mut self.root, &segments, "", &mut pruned);
+        UpsertOutcome::Deleted { pruned }
+    }
+
+    fn ensure_node(&mut self, topic: &str) -> &mut Node {
         let mut node = &mut self.root;
         if !topic.is_empty() {
             for segment in topic.split('/') {
@@ -156,44 +262,90 @@ impl TopicTree {
                     });
             }
         }
+        node
+    }
 
-        let existed = node.leaf.is_some();
-        match &mut node.leaf {
-            Some(leaf) => {
-                leaf.history
-                    .push_back(std::mem::replace(&mut leaf.latest, message));
-                if self.buffer_size > 0 && leaf.message_count() > self.buffer_size {
-                    leaf.history.pop_front();
-                }
-                leaf.received = leaf.received.saturating_add(1);
-            }
-            None => {
-                node.leaf = Some(Leaf {
-                    latest: message,
-                    history: VecDeque::new(),
-                    received: 1,
-                });
-            }
+    fn node_mut(&mut self, path: &str) -> Option<&mut Node> {
+        if path.is_empty() {
+            return Some(&mut self.root);
         }
+        let mut node = &mut self.root;
+        for segment in path.split('/') {
+            node = node.children.get_mut(segment)?;
+        }
+        Some(node)
+    }
 
-        self.index.insert(topic);
-        if existed {
-            UpsertOutcome::Updated
-        } else {
-            UpsertOutcome::Inserted
+    fn pop_history_front(&mut self, topic: &str) -> Option<Message> {
+        self.node_mut(topic)?.leaf.as_mut()?.history.pop_front()
+    }
+
+    fn drop_topic_oldest_extra(&mut self, topic: &str) {
+        if let Some(dropped) = self.pop_history_front(topic) {
+            self.extra_index
+                .remove(&(dropped.inbound.timestamp, dropped.seq));
+            self.stored_bytes = self.stored_bytes.saturating_sub(message_bytes(&dropped));
         }
     }
 
-    fn delete_leaf(&mut self, topic: &str) -> UpsertOutcome {
-        self.index.remove(topic);
-        let mut pruned = Vec::new();
-        if topic.is_empty() {
-            self.root.leaf.take();
-            return UpsertOutcome::Deleted { pruned };
+    fn release_leaf(&mut self, leaf: &Leaf) {
+        for message in &leaf.history {
+            self.extra_index
+                .remove(&(message.inbound.timestamp, message.seq));
+            self.stored_bytes = self.stored_bytes.saturating_sub(message_bytes(message));
         }
-        let segments: Vec<&str> = topic.split('/').collect();
-        delete_walk(&mut self.root, &segments, "", &mut pruned);
-        UpsertOutcome::Deleted { pruned }
+        self.stored_bytes = self
+            .stored_bytes
+            .saturating_sub(message_bytes(&leaf.latest));
+    }
+
+    fn evict(&mut self) {
+        if self.stored_bytes <= self.ram_limit {
+            self.set_ram_exhausted(false);
+            return;
+        }
+        let target = (u128::from(self.ram_limit) * 9 / 10) as u64;
+        while self.stored_bytes > target {
+            let Some((_, topic)) = self.extra_index.pop_first() else {
+                self.set_ram_exhausted(self.stored_bytes > self.ram_limit);
+                return;
+            };
+            if let Some(dropped) = self.pop_history_front(&topic) {
+                self.stored_bytes = self.stored_bytes.saturating_sub(message_bytes(&dropped));
+            }
+        }
+        self.set_ram_exhausted(self.stored_bytes > self.ram_limit);
+    }
+
+    fn set_ram_exhausted(&mut self, exhausted: bool) {
+        if self.ram_exhausted == exhausted {
+            return;
+        }
+        self.ram_exhausted = exhausted;
+        if exhausted {
+            warn!(
+                stored_bytes = self.stored_bytes,
+                ram_limit = self.ram_limit,
+                "topic store RAM budget exhausted"
+            );
+        } else {
+            debug!(
+                stored_bytes = self.stored_bytes,
+                ram_limit = self.ram_limit,
+                "topic store RAM budget recovered"
+            );
+        }
+    }
+}
+
+fn message_bytes(message: &Message) -> u64 {
+    const OVERHEAD: u64 = 192;
+    let payload = message.inbound.payload.len() as u64;
+    let text = message.text.len() as u64;
+    match message.format {
+        Format::Json => payload + text + text + OVERHEAD,
+        Format::Text => payload + text + OVERHEAD,
+        Format::Binary => payload + OVERHEAD,
     }
 }
 
@@ -205,8 +357,11 @@ impl Leaf {
     pub fn get(&self, index: Option<usize>) -> Option<&Message> {
         match index {
             None => Some(&self.latest),
-            Some(i) if i == self.history.len() => Some(&self.latest),
-            Some(i) => self.history.get(i),
+            Some(seq) if self.latest.seq == seq as u64 => Some(&self.latest),
+            Some(seq) => self
+                .history
+                .iter()
+                .find(|message| message.seq == seq as u64),
         }
     }
 }
@@ -252,7 +407,7 @@ fn substring_highlights(path: &str, query: &str) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
 
     use bytes::Bytes;
 
@@ -266,6 +421,16 @@ mod tests {
             retain,
             qos: QoS::AtMostOnce,
             timestamp: SystemTime::now(),
+        })
+    }
+
+    fn msg_at(topic: &str, payload: &[u8], secs: u64) -> Message {
+        decode_inbound(Inbound {
+            topic: topic.into(),
+            payload: Bytes::copy_from_slice(payload),
+            retain: false,
+            qos: QoS::AtMostOnce,
+            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
         })
     }
 
@@ -408,5 +573,86 @@ mod tests {
             skip.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
             vec!["home/living/lamp", "lamp"]
         );
+    }
+
+    #[test]
+    fn ram_budget_evicts_oldest_extras_keeps_latest() {
+        let mut tree = TopicTree::new(0);
+        tree.upsert(msg_at("a", b"1", 1));
+        tree.upsert(msg_at("a", b"2", 2));
+        tree.upsert(msg_at("a", b"3", 3));
+        tree.upsert(msg_at("b", b"1", 4));
+        tree.upsert(msg_at("b", b"2", 5));
+        tree.upsert(msg_at("b", b"3", 6));
+
+        // Each text "n" is 194 bytes. Drop the two oldest extras (a/1, a/2) first.
+        tree.set_ram_limit(900);
+        assert_eq!(tree.get("a").unwrap().history.len(), 0);
+        assert_eq!(tree.get("a").unwrap().latest.text, "3");
+        assert_eq!(tree.get("b").unwrap().history.len(), 2);
+        assert_eq!(tree.get("b").unwrap().latest.text, "3");
+
+        tree.set_ram_limit(400);
+        assert_eq!(tree.get("a").unwrap().history.len(), 0);
+        assert_eq!(tree.get("b").unwrap().history.len(), 0);
+        assert_eq!(tree.get("a").unwrap().latest.text, "3");
+        assert_eq!(tree.get("b").unwrap().latest.text, "3");
+        assert!(!tree.ram_exhausted());
+    }
+
+    #[test]
+    fn ram_budget_one_message_per_topic_does_not_drop_latest() {
+        let mut tree = TopicTree::new(0);
+        tree.upsert(msg("a", b"hello", false));
+        tree.upsert(msg("b", b"world", false));
+        let stored = tree.stored_bytes();
+        assert!(stored > 0);
+
+        tree.set_ram_limit(stored.saturating_sub(1));
+        assert_eq!(tree.topic_count(), 2);
+        assert!(tree.get("a").is_some());
+        assert!(tree.get("b").is_some());
+        assert!(tree.get("a").unwrap().history.is_empty());
+        assert!(tree.get("b").unwrap().history.is_empty());
+        assert!(tree.ram_exhausted());
+        assert_eq!(
+            tree.upsert(msg("c", b"nope", false)),
+            UpsertOutcome::Ignored
+        );
+        assert!(tree.get("c").is_none());
+    }
+
+    #[test]
+    fn empty_retain_subtracts_bytes_and_clears_extras() {
+        let mut tree = TopicTree::new(0);
+        tree.upsert(msg("t", b"1", false));
+        tree.upsert(msg("t", b"2", false));
+        assert!(tree.stored_bytes() > 0);
+        assert_eq!(tree.get("t").unwrap().history.len(), 1);
+
+        tree.upsert(msg("t", b"", true));
+        assert_eq!(tree.stored_bytes(), 0);
+        assert!(tree.get("t").is_none());
+        assert!(!tree.ram_exhausted());
+    }
+
+    #[test]
+    fn seq_is_stable_and_missing_seq_returns_none() {
+        let mut tree = TopicTree::new(0);
+        tree.upsert(msg_at("t", b"a", 1));
+        tree.upsert(msg_at("t", b"b", 2));
+        tree.upsert(msg_at("t", b"c", 3));
+
+        let extra_seq = tree.get("t").unwrap().history[0].seq as usize;
+        let latest_seq = tree.get("t").unwrap().latest.seq as usize;
+        assert!(tree.get_message("t", Some(extra_seq)).is_some());
+        assert_eq!(tree.get_message("t", Some(latest_seq)).unwrap().text, "c");
+
+        tree.set_ram_limit(200);
+        assert!(tree.get_message("t", Some(extra_seq)).is_none());
+        assert_eq!(tree.get_message("t", Some(latest_seq)).unwrap().text, "c");
+        assert_eq!(tree.get("t").unwrap().latest.seq as usize, latest_seq);
+        assert!(tree.get_message("t", Some(9999)).is_none());
+        assert_eq!(tree.get_message("t", None).unwrap().text, "c");
     }
 }

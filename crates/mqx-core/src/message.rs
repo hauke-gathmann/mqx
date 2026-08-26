@@ -98,6 +98,7 @@ pub struct Message {
     pub data: Result<Value, String>,
     pub format: Format,
     pub text: String,
+    pub seq: u64,
 }
 
 impl Message {
@@ -131,6 +132,7 @@ pub fn decode_inbound(inbound: Inbound) -> Message {
                 data: Ok(value),
                 format: Format::Json,
                 text: pretty,
+                seq: 0,
             };
         }
         let text = text.to_string();
@@ -139,6 +141,7 @@ pub fn decode_inbound(inbound: Inbound) -> Message {
             data: Err("payload is not valid JSON".into()),
             format: Format::Text,
             text,
+            seq: 0,
         };
     }
 
@@ -147,6 +150,7 @@ pub fn decode_inbound(inbound: Inbound) -> Message {
         data: Err("payload is not valid UTF-8".into()),
         format: Format::Binary,
         text: "<binary>".into(),
+        seq: 0,
     }
 }
 

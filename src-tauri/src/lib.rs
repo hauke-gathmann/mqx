@@ -77,6 +77,7 @@ pub fn run() {
             commands::jq_history,
             commands::get_settings,
             commands::set_theme,
+            commands::set_ram_limit,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

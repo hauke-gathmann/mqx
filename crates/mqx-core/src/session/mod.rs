@@ -106,7 +106,7 @@ impl Session {
             id: profile.id.clone(),
             status: Status::Connecting,
             client,
-            tree: TopicTree::new(ui.buffer_size),
+            tree: TopicTree::with_limits(ui.buffer_size, ui.ram_limit_bytes),
             selected: None,
             subscriptions,
             source: Source::Live,
@@ -147,6 +147,14 @@ impl Session {
         self.selected.as_deref()
     }
 
+    pub fn ram_exhausted(&self) -> bool {
+        self.tree.ram_exhausted()
+    }
+
+    pub fn set_ram_limit(&mut self, bytes: u64) {
+        self.tree.set_ram_limit(bytes);
+    }
+
     pub fn set_status(&mut self, status: Status) {
         if let Status::Error { msg } = &status {
             self.error = Some(msg.clone());
@@ -178,6 +186,7 @@ impl Session {
             status: self.status.kind(),
             error,
             broker: self.broker.clone(),
+            ram_exhausted: self.tree.ram_exhausted(),
         }
     }
 
@@ -188,6 +197,8 @@ impl Session {
             topics: self.tree.topic_count() as u64,
             messages_total: self.messages_total,
             messages_per_sec,
+            stored_bytes: self.tree.stored_bytes(),
+            ram_limit_bytes: self.tree.ram_limit(),
         }
     }
 
@@ -219,7 +230,7 @@ impl Session {
         let leaf = self.tree.get(topic)?;
         Some(HistoryMeta {
             count: leaf.message_count(),
-            latest_index: leaf.history.len(),
+            latest_index: leaf.latest.seq as usize,
         })
     }
 
@@ -228,13 +239,9 @@ impl Session {
         let mut items: Vec<HistoryItemDto> = leaf
             .history
             .iter()
-            .enumerate()
-            .map(|(index, message)| HistoryItemDto::from_message(index, message))
+            .map(HistoryItemDto::from_message)
             .collect();
-        items.push(HistoryItemDto::from_message(
-            leaf.history.len(),
-            &leaf.latest,
-        ));
+        items.push(HistoryItemDto::from_message(&leaf.latest));
         Some(items)
     }
 
@@ -283,6 +290,7 @@ impl Session {
 
         let mut upserts = Vec::new();
         let mut deletes = Vec::new();
+        let mut emitted = topic_message;
         match outcome {
             UpsertOutcome::Inserted => {
                 upserts.extend(self.collect_path_dtos(&topic));
@@ -291,6 +299,9 @@ impl Session {
                 if let Some(dto) = self.node_dto(&topic) {
                     upserts.push(dto);
                 }
+            }
+            UpsertOutcome::Ignored => {
+                emitted = None;
             }
             UpsertOutcome::Deleted { pruned } => {
                 deletes = pruned;
@@ -305,14 +316,14 @@ impl Session {
         }
 
         ApplyResult {
-            topic_message,
+            topic_message: emitted,
             upserts,
             deletes,
         }
     }
 
     pub fn clear_tree(&mut self) {
-        self.tree = TopicTree::new(self.tree.buffer_size());
+        self.tree = TopicTree::with_limits(self.tree.buffer_size(), self.tree.ram_limit());
         self.selected = None;
         self.messages_total = 0;
     }
@@ -588,5 +599,23 @@ mod tests {
         // Empty retain is a real MQTT packet; header totals include it.
         assert_eq!(session.stats(0.0).messages_total, 2);
         assert!(session.tree_children(&[]).is_empty());
+    }
+
+    #[test]
+    fn ingest_skips_when_ram_exhausted() {
+        let mut session = session();
+        session.ingest(msg("a", b"hello", false));
+        session.ingest(msg("b", b"world", false));
+        let stored = session.stats(0.0).stored_bytes;
+        session.set_ram_limit(stored.saturating_sub(1));
+        assert!(session.ram_exhausted());
+
+        session.select_topic(Some("c".into()));
+        let result = session.ingest(msg("c", b"nope", false));
+        assert!(result.topic_message.is_none());
+        assert!(result.upserts.is_empty());
+        assert!(session.get_message("c", None).is_none());
+        assert_eq!(session.stats(0.0).messages_total, 3);
+        assert!(session.status_event().ram_exhausted);
     }
 }

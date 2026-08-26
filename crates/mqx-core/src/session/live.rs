@@ -249,10 +249,20 @@ async fn run_live(
             }
             Some(message) = decoded_rx.recv() => {
                 window_count = window_count.saturating_add(1);
-                let applied = {
+                let (applied, status) = {
                     let mut guard = lock(&session);
-                    guard.ingest(message)
+                    let before = guard.ram_exhausted();
+                    let applied = guard.ingest(message);
+                    let status = if guard.ram_exhausted() != before {
+                        Some(guard.status_event())
+                    } else {
+                        None
+                    };
+                    (applied, status)
                 };
+                if let Some(status) = status {
+                    let _ = event_tx.send(SessionEvent::Status(status));
+                }
                 if let Some(dto) = applied.topic_message {
                     let _ = event_tx.send(SessionEvent::TopicMessage(dto));
                 }

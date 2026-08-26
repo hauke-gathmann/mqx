@@ -481,13 +481,29 @@
     }
   }
 
+  function clampHistoryIndex(
+    items: HistoryItem[],
+    latestIndex: number,
+    current: number | null,
+  ): number {
+    if (current != null && items.some((item) => item.index === current)) {
+      return current;
+    }
+    return items[0]?.index ?? latestIndex;
+  }
+
   function stepHistory(delta: number) {
-    if (meta == null || historyIndex == null) {
+    if (historyIndex == null || history.length === 0) {
       return;
     }
-    const next = Math.min(meta.count - 1, Math.max(0, historyIndex + delta));
-    if (next !== historyIndex) {
-      void openHistory(next);
+    const pos = history.findIndex((item) => item.index === historyIndex);
+    if (pos < 0) {
+      return;
+    }
+    const next = Math.min(history.length - 1, Math.max(0, pos + delta));
+    const nextIndex = history[next]?.index;
+    if (nextIndex != null && nextIndex !== historyIndex) {
+      void openHistory(nextIndex);
     }
   }
 
@@ -514,6 +530,12 @@
       if (follow) {
         message = payload;
         historyIndex = nextMeta.latestIndex;
+      } else {
+        const clamped = clampHistoryIndex(nextHistory, nextMeta.latestIndex, historyIndex);
+        if (clamped !== historyIndex) {
+          historyIndex = clamped;
+          void openHistory(clamped);
+        }
       }
     } catch (err) {
       if (token !== seq || stamp !== liveStamp) {

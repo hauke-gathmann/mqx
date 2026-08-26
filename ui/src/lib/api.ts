@@ -86,3 +86,7 @@ export function getSettings(): Promise<UiSettings> {
 export function setTheme(theme: Theme): Promise<UiSettings> {
   return invoke<UiSettings>("setTheme", { theme });
 }
+
+export function setRamLimit(bytes: number): Promise<UiSettings> {
+  return invoke<UiSettings>("setRamLimit", { bytes });
+}

@@ -9,6 +9,7 @@
     getSettings,
     listProfiles,
     saveProfile,
+    setRamLimit,
     setTheme,
   } from "./lib/api";
   import ConnectionPicker from "./lib/ConnectionPicker.svelte";
@@ -22,9 +23,12 @@
     draftToSaveInput,
     duplicateName,
     emptyDraft,
+    DEFAULT_RAM_LIMIT_BYTES,
     errorMessage,
     formatRate,
+    formatStoreUsage,
     generateClientId,
+    ramLimitGb,
     getLastUsedProfileId,
     idleSessionStatus,
     setLastUsedProfileId,
@@ -48,6 +52,7 @@
   let wantedProfileId = $state<string | null>(null);
   let wantedEpoch = $state<number | null>(null);
   let theme = $state<Theme>(readCachedTheme());
+  let ramLimitBytes = $state(DEFAULT_RAM_LIMIT_BYTES);
   let settingsOpen = $state(false);
   let settingsError = $state<string | null>(null);
 
@@ -63,6 +68,10 @@
   const lastUsedName = $derived(
     lastUsedId ? (profiles.find((profile) => profile.id === lastUsedId)?.name ?? null) : null,
   );
+  const storeUsage = $derived(
+    stats ? formatStoreUsage(stats.storedBytes ?? 0, stats.ramLimitBytes ?? ramLimitBytes) : null,
+  );
+  const ramLimitLabel = $derived(ramLimitGb(ramLimitBytes));
 
   function clearMessages() {
     error = null;
@@ -108,6 +117,21 @@
       if (isTheme(settings.theme)) {
         theme = settings.theme;
         applyTheme(settings.theme);
+      }
+      if (typeof settings.ramLimitBytes === "number") {
+        ramLimitBytes = settings.ramLimitBytes;
+      }
+    } catch (err) {
+      settingsError = errorMessage(err);
+    }
+  }
+
+  async function chooseRamLimit(bytes: number) {
+    ramLimitBytes = bytes;
+    try {
+      const settings = await setRamLimit(bytes);
+      if (typeof settings.ramLimitBytes === "number") {
+        ramLimitBytes = settings.ramLimitBytes;
       }
     } catch (err) {
       settingsError = errorMessage(err);
@@ -366,6 +390,9 @@
           theme = settings.theme;
           applyTheme(settings.theme);
         }
+        if (typeof settings.ramLimitBytes === "number") {
+          ramLimitBytes = settings.ramLimitBytes;
+        }
       } catch {
         applyTheme(theme);
       }
@@ -409,6 +436,9 @@
         {/if}
         {#if stats}
           <span class="stats">{stats.topics} topics · {formatRate(stats.messagesPerSec)}</span>
+          {#if storeUsage}
+            <span class="stats">{storeUsage}</span>
+          {/if}
         {/if}
         {#if sessionStatus.error}
           <span class="session-error">{sessionStatus.error}</span>
@@ -426,6 +456,12 @@
       <p class="banner error" role="alert">{error}</p>
     {:else if notice}
       <p class="banner ok">{notice}</p>
+    {/if}
+    {#if sessionStatus.ramExhausted}
+      <p class="banner error" role="alert">
+        Topic history is at the {ramLimitLabel} GB limit. Every topic already has only its latest
+        message. Raise the limit in Settings or disconnect.
+      </p>
     {/if}
 
     {#if showPicker}
@@ -466,9 +502,11 @@
   {#if settingsOpen}
     <Settings
       {theme}
+      {ramLimitBytes}
       error={settingsError}
       oncancel={closeSettings}
       ontheme={(next) => void chooseTheme(next)}
+      onramlimit={(bytes) => void chooseRamLimit(bytes)}
     />
   {/if}
 </div>

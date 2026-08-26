@@ -304,6 +304,7 @@ export type SessionStatus = {
   status: SessionStatusKind;
   error?: string;
   broker: string;
+  ramExhausted?: boolean;
 };
 
 export type SessionStats = {
@@ -312,6 +313,8 @@ export type SessionStats = {
   topics: number;
   messagesTotal: number;
   messagesPerSec: number;
+  storedBytes?: number;
+  ramLimitBytes?: number;
 };
 
 export type PayloadFormat = "json" | "text" | "binary";
@@ -383,7 +386,13 @@ export type HistoryItem = {
 
 export type UiSettings = {
   theme: "dark" | "light" | "system";
+  ramLimitBytes: number;
 };
+
+export const DEFAULT_RAM_LIMIT_BYTES = 12 * 1024 * 1024 * 1024;
+export const RAM_LIMIT_MIN_GB = 4;
+export const RAM_LIMIT_MAX_GB = 128;
+const GIB = 1024 * 1024 * 1024;
 
 export function idleSessionStatus(): SessionStatus {
   return {
@@ -399,6 +408,25 @@ export function formatRate(messagesPerSec: number): string {
     return `${(messagesPerSec / 1000).toFixed(1)}k/s`;
   }
   return `${messagesPerSec.toFixed(messagesPerSec >= 10 ? 0 : 1)}/s`;
+}
+
+function formatGib(bytes: number): string {
+  const gb = bytes / GIB;
+  if (Math.abs(gb - Math.round(gb)) < 1e-9) {
+    return String(Math.round(gb));
+  }
+  return gb >= 10 ? gb.toFixed(0) : gb.toFixed(1);
+}
+
+export function formatStoreUsage(storedBytes: number, limitBytes: number): string | null {
+  if (!(limitBytes > 0) || storedBytes * 2 < limitBytes) {
+    return null;
+  }
+  return `${formatGib(storedBytes)} / ${formatGib(limitBytes)} GB`;
+}
+
+export function ramLimitGb(bytes: number): number {
+  return Math.round(bytes / GIB);
 }
 
 export function errorMessage(err: unknown): string {

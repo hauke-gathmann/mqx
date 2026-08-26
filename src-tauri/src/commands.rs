@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use mqx_core::{
-    AppDirs, ConnectionProfile, HistoryItemDto, HistoryMeta, JqApplyResult, JqHistory, LiveHandle,
+    ConnectionProfile, HistoryItemDto, HistoryMeta, JqApplyResult, JqHistory, LiveHandle,
     MessageDto, ProfileStore, ProfileSummary, RECORDING_KIND, RecordStatus, RecordingContext,
     RecordingHeader, RecordingInfo, ReplayJob, SearchHitDto, SearchMode, SessionEvent,
     SessionStatus, Status, StoppedRecording, TreeBatch, TreeNodeDto, assert_replay_target,

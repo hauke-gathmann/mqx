@@ -1,6 +1,6 @@
 [package]
 name = "mqx"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop MQTT explorer"
 edition = "2024"
 license = "MIT"

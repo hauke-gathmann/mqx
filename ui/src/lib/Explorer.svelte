@@ -245,7 +245,9 @@
         : "Only topics whose path contains the filter are shown."
       : emptyKind === "connecting"
         ? "The topic tree will appear here once the broker session is up."
-        : "Messages show up as they arrive. If this stays empty, check the profile subscriptions.",
+        : status === "detached"
+          ? "The tree is frozen. Go live to ingest new messages."
+          : "Messages show up as they arrive. If this stays empty, check the profile subscriptions.",
   );
 
   function sameSession(payloadEpoch?: number, payloadProfile?: string | null) {

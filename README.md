@@ -4,6 +4,12 @@ mqx is a desktop MQTT explorer. Connect to a broker, watch the topic tree fill i
 
 One window is one broker. Saved profiles remember host, protocol, subscriptions, and TLS. JSON payloads pretty-print in place; jq filters and fuzzy topic search sit next to the tree. Passwords go in the OS keychain (or a private file when no keychain is available).
 
+**Live / Detached.** Detach freezes the tree while MQTT stays connected; Go live resumes ingest. Recording continues while Detached.
+
+**Topic history limit.** Settings has a RAM slider (4–128 GB, default 12 GB). Older extra messages drop first; each topic keeps at least its latest payload. That cap is the in-memory topic store, not the whole process.
+
+**Record and replay.** While connected, Record writes mqtt-trace JSONL (raw payloads). The Playback tab lists captures and publishes them onto a broker, **including retain flags** — that can change retained state on the target. Replay does not flip Live / Detached; stay Live to watch the tree, or Detached to dump traffic without moving it.
+
 ## Develop
 
 Requires [Rust stable](https://rustup.rs/) and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform.
@@ -37,9 +43,11 @@ cargo run -p mqtt-trace -- replay traffic.jsonl --broker mqtt://127.0.0.1:1883
 
 Subscribe defaults to `#`. Add `--sys` to include `$SYS/#`. Replay `--speed 1` is real time; `--speed 0` is as fast as possible; `--loop` repeats the trace.
 
+CLI replay of an in-app recording is the same thing as the Playback tab: a traffic dump onto the broker, not a private in-memory view. In-app files start with a header line; `mqtt-trace replay` skips it. Retained publishes in the file are sent as retained.
+
 Profiles are stored under the `mqx` application directory. Theme is stored in `config.toml` (`[ui] theme = "dark" | "light" | "system"`).
 
-Native menus: **mqx**, **Connections**, **Edit**, **View**, **Help**. `Cmd/Ctrl+,` opens settings. `Cmd/Ctrl+K` focuses topic search. ↑/↓ steps message history.
+Native menus: **mqx**, **Connections**, **Edit**, **View**, **Help**. `Cmd/Ctrl+,` opens settings. `Cmd/Ctrl+K` focuses topic search. `Cmd/Ctrl+Shift+R` toggles recording. Connections has Detach / Go Live / Start/Stop Recording. View switches Explorer and Playback. ↑/↓ steps message history.
 
 ## Releases
 

@@ -8,24 +8,93 @@
     selectedIndex,
     onselectindex,
     onfocuspane,
+    listEl = $bindable(null),
   }: {
     topic: string | null;
     items: HistoryItem[];
     selectedIndex: number | null;
     onselectindex: (index: number) => void;
     onfocuspane: () => void;
+    listEl?: HTMLDivElement | null;
   } = $props();
 
-  let listEl = $state<HTMLDivElement | null>(null);
   let prevTopic: string | null = null;
   let prevIndex: number | null = null;
   let prevCount = 0;
 
   const rows = $derived([...items].reverse());
+  const oldestIndex = $derived(items.length > 0 ? items[0].index : null);
   const latestIndex = $derived(items.length > 0 ? items[items.length - 1].index : null);
   const followingLatest = $derived(
     selectedIndex != null && latestIndex != null && selectedIndex === latestIndex,
   );
+  const activeId = $derived(
+    selectedIndex != null && items.length > 0 ? optionId(selectedIndex) : undefined,
+  );
+
+  function optionId(index: number): string {
+    return `message-${index}`;
+  }
+
+  function pageSize(): number {
+    const el = listEl;
+    const row = el?.querySelector<HTMLElement>(".row");
+    const height = row?.offsetHeight ?? 0;
+    if (!el || height <= 0) {
+      return 10;
+    }
+    return Math.max(1, Math.floor(el.clientHeight / height) - 1);
+  }
+
+  function moveSelection(delta: number) {
+    if (selectedIndex == null || oldestIndex == null || latestIndex == null) {
+      return;
+    }
+    const next = Math.min(latestIndex, Math.max(oldestIndex, selectedIndex + delta));
+    if (next !== selectedIndex) {
+      onselectindex(next);
+    }
+  }
+
+  function onListKey(event: KeyboardEvent) {
+    if (event.metaKey || event.ctrlKey || event.altKey || items.length === 0) {
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      event.stopPropagation();
+      moveSelection(-1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      moveSelection(1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (latestIndex != null && selectedIndex !== latestIndex) {
+        onselectindex(latestIndex);
+      }
+    } else if (event.key === "End") {
+      event.preventDefault();
+      event.stopPropagation();
+      if (oldestIndex != null && selectedIndex !== oldestIndex) {
+        onselectindex(oldestIndex);
+      }
+    } else if (event.key === "PageUp") {
+      event.preventDefault();
+      event.stopPropagation();
+      moveSelection(pageSize());
+    } else if (event.key === "PageDown") {
+      event.preventDefault();
+      event.stopPropagation();
+      moveSelection(-pageSize());
+    }
+  }
+
+  function selectRow(index: number) {
+    onselectindex(index);
+    listEl?.focus();
+  }
 
   $effect(() => {
     const currentTopic = topic;
@@ -78,9 +147,18 @@
 
     if (indexChanged) {
       void tick().then(() => {
-        listEl
-          ?.querySelector<HTMLElement>(".row.current")
-          ?.scrollIntoView({ block: "nearest" });
+        const current = listEl?.querySelector<HTMLElement>(".row.current");
+        current?.scrollIntoView({ block: "nearest" });
+        const active = document.activeElement;
+        if (
+          current &&
+          active instanceof HTMLElement &&
+          active !== listEl &&
+          listEl?.contains(active) &&
+          active.classList.contains("row")
+        ) {
+          current.focus({ preventScroll: true });
+        }
       });
     }
   });
@@ -149,35 +227,48 @@
 
   {#if !topic}
     <p class="empty">Select a topic to see its messages.</p>
-  {:else if items.length === 0}
-    <p class="empty">No messages on this topic yet.</p>
   {:else}
-    <div class="scroll" bind:this={listEl} role="listbox" aria-label="Message history">
-      {#each rows as item (item.index)}
-        {@const latest = item.index === items[items.length - 1]?.index}
-        <button
-          type="button"
-          class="row"
-          class:current={item.index === selectedIndex}
-          role="option"
-          aria-selected={item.index === selectedIndex}
-          onclick={() => onselectindex(item.index)}
-        >
-          <span class="time">{formatArrival(item.timestamp)}</span>
-          <span class="meta">
-            <span class="badge">{item.format}</span>
-            <span class="size">{formatSize(item.size)}</span>
-            {#if item.retain}
-              <span class="badge retain">retain</span>
-            {/if}
-            {#if latest && followingLatest}
-              <span class="badge latest">latest</span>
-            {:else if latest}
-              <span class="badge">latest</span>
-            {/if}
-          </span>
-        </button>
-      {/each}
+    <div
+      class="scroll"
+      bind:this={listEl}
+      role="listbox"
+      tabindex="0"
+      aria-label="Message history"
+      aria-activedescendant={activeId}
+      onkeydown={onListKey}
+    >
+      {#if items.length === 0}
+        <p class="empty">No messages on this topic yet.</p>
+      {:else}
+        {#each rows as item (item.index)}
+          {@const latest = item.index === items[items.length - 1]?.index}
+          {@const current = item.index === selectedIndex}
+          <button
+            type="button"
+            id={optionId(item.index)}
+            class="row"
+            class:current
+            role="option"
+            tabindex={current ? 0 : -1}
+            aria-selected={current}
+            onclick={() => selectRow(item.index)}
+          >
+            <span class="time">{formatArrival(item.timestamp)}</span>
+            <span class="meta">
+              <span class="badge">{item.format}</span>
+              <span class="size">{formatSize(item.size)}</span>
+              {#if item.retain}
+                <span class="badge retain">retain</span>
+              {/if}
+              {#if latest && followingLatest}
+                <span class="badge latest">latest</span>
+              {:else if latest}
+                <span class="badge">latest</span>
+              {/if}
+            </span>
+          </button>
+        {/each}
+      {/if}
     </div>
   {/if}
 </div>
@@ -254,6 +345,10 @@
     overflow-anchor: none;
   }
 
+  .scroll:focus {
+    outline: none;
+  }
+
   .row {
     display: flex;
     flex-direction: column;
@@ -275,6 +370,12 @@
 
   .row.current {
     background: var(--accent-muted);
+  }
+
+  .scroll:focus .row.current,
+  .row.current:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
 
   .time {

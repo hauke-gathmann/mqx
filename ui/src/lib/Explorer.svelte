@@ -1,6 +1,6 @@
 <script lang="ts">
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import {
     getHistoryMeta,
     getMessage,
@@ -61,6 +61,7 @@
   let now = $state(Date.now());
   let pane = $state<"tree" | "messages" | "inspector">("tree");
   let searchEl = $state<HTMLInputElement | null>(null);
+  let messageListEl = $state<HTMLDivElement | null>(null);
   let loading = $state(new Set<string>([ROOT]));
   let queued = $state<TreeBatch[]>([]);
   let error = $state<string | null>(null);
@@ -177,12 +178,15 @@
   function onGutterKey(which: "tree" | "messages", event: KeyboardEvent) {
     if (event.key === "ArrowLeft") {
       event.preventDefault();
+      event.stopPropagation();
       nudgeSplit(which, -2);
     } else if (event.key === "ArrowRight") {
       event.preventDefault();
+      event.stopPropagation();
       nudgeSplit(which, 2);
     } else if (event.key === "Home") {
       event.preventDefault();
+      event.stopPropagation();
       treePct = DEFAULT_TREE_PCT;
       messagesPct = DEFAULT_MESSAGES_PCT;
       persistSplit();
@@ -372,6 +376,13 @@
     }
   }
 
+  function focusMessageList() {
+    if (isTypingTarget(document.activeElement)) {
+      return;
+    }
+    messageListEl?.focus({ preventScroll: true });
+  }
+
   async function select(path: string) {
     const node = tree.nodes.get(path);
     if (!node?.hasPayload) {
@@ -380,8 +391,14 @@
     const token = ++seq;
     liveStamp = 0;
     selected = path;
+    pane = "messages";
     clearInspector();
     error = null;
+    void tick().then(() => {
+      if (token === seq) {
+        focusMessageList();
+      }
+    });
     try {
       await selectTopic(path);
       if (token !== seq) {
@@ -407,6 +424,10 @@
       meta = nextMeta;
       history = nextHistory;
       historyIndex = nextMeta.latestIndex;
+      await tick();
+      if (token === seq) {
+        focusMessageList();
+      }
     } catch (err) {
       if (token !== seq) {
         return;
@@ -555,6 +576,26 @@
     }
   }
 
+  function historyPageSize(): number {
+    const el = messageListEl;
+    const row = el?.querySelector<HTMLElement>(".row");
+    const height = row?.offsetHeight ?? 0;
+    if (!el || height <= 0) {
+      return 10;
+    }
+    return Math.max(1, Math.floor(el.clientHeight / height) - 1);
+  }
+
+  function jumpHistory(index: number) {
+    if (meta == null) {
+      return;
+    }
+    const next = Math.min(meta.count - 1, Math.max(0, index));
+    if (next !== historyIndex) {
+      void openHistory(next);
+    }
+  }
+
   async function onTopicMessage(payload: MessageDto) {
     if (status === "detached" || !sameSession(payload.epoch)) {
       return;
@@ -643,12 +684,28 @@
     } else if (event.key === "l") {
       event.preventDefault();
       stepHistory(1);
-    } else if (pane !== "tree" && (event.key === "ArrowDown" || event.key === "j")) {
+    } else if (pane === "tree") {
+      return;
+    } else if (event.key === "ArrowDown" || event.key === "j") {
       event.preventDefault();
       stepHistory(-1);
-    } else if (pane !== "tree" && (event.key === "ArrowUp" || event.key === "k")) {
+    } else if (event.key === "ArrowUp" || event.key === "k") {
       event.preventDefault();
       stepHistory(1);
+    } else if (pane === "messages" && event.key === "Home") {
+      event.preventDefault();
+      if (meta != null) {
+        jumpHistory(meta.latestIndex);
+      }
+    } else if (pane === "messages" && event.key === "End") {
+      event.preventDefault();
+      jumpHistory(0);
+    } else if (pane === "messages" && event.key === "PageUp") {
+      event.preventDefault();
+      stepHistory(historyPageSize());
+    } else if (pane === "messages" && event.key === "PageDown") {
+      event.preventDefault();
+      stepHistory(-historyPageSize());
     }
   }
 
@@ -766,6 +823,7 @@
         topic={selected}
         items={history}
         selectedIndex={historyIndex}
+        bind:listEl={messageListEl}
         onselectindex={(index) => void openHistory(index)}
         onfocuspane={() => (pane = "messages")}
       />

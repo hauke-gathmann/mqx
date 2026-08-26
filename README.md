@@ -39,7 +39,7 @@ Subscribe defaults to `#`. Add `--sys` to include `$SYS/#`. Replay `--speed 1` i
 
 Profiles are stored under the `mqx` application directory. Theme is stored in `config.toml` (`[ui] theme = "dark" | "light" | "system"`).
 
-Native menus: **mqx**, **Connections**, **Edit**, **View**, **Help**. `Cmd/Ctrl+,` opens settings. `Cmd/Ctrl+K` focuses topic search.
+Native menus: **mqx**, **Connections**, **Edit**, **View**, **Help**. `Cmd/Ctrl+,` opens settings. `Cmd/Ctrl+K` focuses topic search. ↑/↓ steps message history.
 
 ## Releases
 

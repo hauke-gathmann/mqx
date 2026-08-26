@@ -1,5 +1,6 @@
 mod dto;
 mod live;
+mod replay;
 mod tls;
 
 use std::time::{Duration, Instant, SystemTime};
@@ -11,6 +12,7 @@ pub use dto::{
     SessionStatus, StatusKind, TreeBatch, TreeNodeDto,
 };
 pub use live::{LiveHandle, SessionEvent};
+pub use replay::{PlaybackProgress, PlaybackState, ReplayJob, assert_replay_target, run_replay};
 pub use tls::broker_display;
 
 use crate::{

@@ -11,7 +11,8 @@ import type {
   SearchHit,
   SearchMode,
   RecordStatus,
-  RecordingFile,
+  RecordingsList,
+  ReplayReply,
   SessionStatus,
   StoppedRecording,
   TreeNodeDto,
@@ -49,6 +50,21 @@ export function disconnect(): Promise<{ status: "disconnected"; epoch: number }>
 
 export function setIngest(enabled: boolean): Promise<SessionStatus> {
   return invoke<SessionStatus>("setIngest", { enabled });
+}
+
+export function listRecordings(): Promise<RecordingsList> {
+  return invoke<RecordingsList>("listRecordings");
+}
+
+export function startReplay(path: string, profileId?: string | null): Promise<ReplayReply> {
+  return invoke<ReplayReply>("startReplay", {
+    path,
+    profileId: profileId || null,
+  });
+}
+
+export function stopReplay(): Promise<"ok"> {
+  return invoke<"ok">("stopReplay");
 }
 
 export function treeChildren(path: string[]): Promise<TreeNodeDto[]> {
@@ -121,10 +137,6 @@ export function saveRecording(tempPath: string, name: string): Promise<{ path: s
 
 export function discardRecording(tempPath: string): Promise<"ok"> {
   return invoke<"ok">("discardRecording", { tempPath });
-}
-
-export function listRecordings(): Promise<RecordingFile[]> {
-  return invoke<RecordingFile[]>("listRecordings");
 }
 
 export function exitApp(): Promise<void> {

@@ -19,6 +19,7 @@ use tracing::{debug, warn};
 use super::{
     Session, Status, Sub,
     dto::{SessionStats, SessionStatus, TreeBatch, TreeNodeDto},
+    replay::PlaybackProgress,
     tls::{mqtt_options, qos_from_rumqttc},
 };
 use crate::{
@@ -44,6 +45,7 @@ pub enum SessionEvent {
     TreeBatch(TreeBatch),
     TopicMessage(MessageDto),
     Record(crate::RecordStatus),
+    Playback(PlaybackProgress),
 }
 
 impl SessionEvent {
@@ -54,6 +56,7 @@ impl SessionEvent {
             Self::TreeBatch(payload) => payload.epoch,
             Self::TopicMessage(payload) => payload.epoch,
             Self::Record(payload) => payload.epoch,
+            Self::Playback(payload) => payload.epoch,
         }
     }
 }
@@ -123,6 +126,14 @@ impl LiveHandle {
 
     pub fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    pub fn client(&self) -> AsyncClient {
+        self.client.clone()
+    }
+
+    pub fn events(&self) -> mpsc::UnboundedSender<SessionEvent> {
+        self.events.clone()
     }
 
     pub fn session(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Session>> {

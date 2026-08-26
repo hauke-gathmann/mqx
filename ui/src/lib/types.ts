@@ -496,6 +496,49 @@ function hostSlug(broker: string): string {
   return host.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "mqtt";
 }
 
+export type AppTab = "connections" | "explorer" | "playback";
+
+export type PlaybackState = "playing" | "stopped" | "ended";
+
+export type PlaybackProgress = {
+  file: string;
+  index: number;
+  total: number;
+  tMs: number;
+  tEndMs: number;
+  state: PlaybackState;
+  epoch?: number;
+  generation?: number;
+};
+
+export type ReplayReply = {
+  status: string;
+  epoch: number;
+  generation: number;
+  file: string;
+  total: number;
+  tMs: number;
+  tEndMs: number;
+};
+
+export type RecordingInfo = {
+  path: string;
+  name: string;
+  fileName: string;
+  startedAt?: string;
+  firstTMs?: number;
+  lastTMs?: number;
+  messages: number;
+  topics: number;
+  bytes: number;
+  mtimeMs: number;
+};
+
+export type RecordingsList = {
+  directory: string;
+  recordings: RecordingInfo[];
+};
+
 export function idleSessionStatus(): SessionStatus {
   return {
     profileId: null,
@@ -504,6 +547,43 @@ export function idleSessionStatus(): SessionStatus {
     status: "disconnected",
     ingestEnabled: false,
     broker: "",
+  };
+}
+
+export function formatClock(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) {
+    ms = 0;
+  }
+  const total = Math.floor(ms / 1000);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+export function formatRecordingTime(recording: RecordingInfo): string {
+  if (recording.startedAt) {
+    const parsed = Date.parse(recording.startedAt);
+    if (!Number.isNaN(parsed)) {
+      return new Date(parsed).toLocaleString();
+    }
+    return recording.startedAt;
+  }
+  if (recording.firstTMs != null) {
+    return new Date(recording.firstTMs).toLocaleString();
+  }
+  return "—";
+}
+
+export function playbackSpanMs(progress: PlaybackProgress, t0Ms: number | null): {
+  elapsed: number;
+  duration: number;
+} {
+  if (t0Ms == null) {
+    return { elapsed: 0, duration: Math.max(0, progress.tEndMs - progress.tMs) };
+  }
+  return {
+    elapsed: Math.max(0, progress.tMs - t0Ms),
+    duration: Math.max(0, progress.tEndMs - t0Ms),
   };
 }
 

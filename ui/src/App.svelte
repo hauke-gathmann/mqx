@@ -17,10 +17,13 @@
     setRecordDirectory,
     setTheme,
     startRecording,
+    startReplay,
     stopRecording,
+    stopReplay as stopReplaySession,
   } from "./lib/api";
   import ConnectionPicker from "./lib/ConnectionPicker.svelte";
   import Explorer from "./lib/Explorer.svelte";
+  import Playback from "./lib/Playback.svelte";
   import ProfileEditor from "./lib/ProfileEditor.svelte";
   import Settings from "./lib/Settings.svelte";
   import { applyTheme, isTheme, readCachedTheme, type Theme } from "./lib/theme";
@@ -32,6 +35,7 @@
     emptyDraft,
     DEFAULT_RAM_LIMIT_BYTES,
     errorMessage,
+    formatClock,
     formatCount,
     formatElapsed,
     formatRate,
@@ -41,10 +45,13 @@
     getLastUsedProfileId,
     idleSessionStatus,
     isStaleSessionStatus,
+    playbackSpanMs,
     sessionOpen as isSessionOpen,
     setLastUsedProfileId,
     statusLabel,
     suggestedRecordingName,
+    type AppTab,
+    type PlaybackProgress,
     type ProfileDraft,
     type ProfileSummary,
     type RecordStatus,
@@ -79,6 +86,10 @@
   let pendingQuit = $state(false);
   let nowMs = $state(Date.now());
   const recording = $derived(recordStatus?.active === true);
+  let tab = $state<AppTab>("connections");
+  let playback = $state<PlaybackProgress | null>(null);
+  let replayT0 = $state<number | null>(null);
+  let wantedGeneration = $state<number | null>(null);
 
   $effect(() => {
     if (!recording) {
@@ -102,9 +113,34 @@
 
   const sessionOpen = $derived(isSessionOpen(sessionStatus.status));
   const showHeader = $derived(sessionOpen || sessionStatus.status === "error");
-  const showExplorer = $derived(sessionOpen);
-  const showPicker = $derived(!sessionOpen && sessionStatus.status !== "error");
+  const showExplorer = $derived(sessionOpen && tab === "explorer");
+  const showPlayback = $derived(tab === "playback");
+  const showPicker = $derived(!sessionOpen && sessionStatus.status !== "error" && tab === "connections");
   const ingestEnabled = $derived(sessionStatus.ingestEnabled ?? sessionStatus.status !== "detached");
+  const replaying = $derived(playback?.state === "playing");
+  const replaySpan = $derived(playback ? playbackSpanMs(playback, replayT0) : { elapsed: 0, duration: 0 });
+
+  $effect(() => {
+    if (sessionOpen) {
+      if (tab === "connections") {
+        tab = "explorer";
+      }
+    } else if (sessionStatus.status !== "error" && tab === "explorer") {
+      tab = "connections";
+    }
+  });
+
+  function selectTab(next: AppTab) {
+    if (next === "explorer" && !sessionOpen) {
+      tab = "connections";
+      return;
+    }
+    if (next === "connections" && sessionOpen) {
+      tab = "explorer";
+      return;
+    }
+    tab = next;
+  }
 
   const lastUsedName = $derived(
     lastUsedId ? (profiles.find((profile) => profile.id === lastUsedId)?.name ?? null) : null,
@@ -323,6 +359,9 @@
   async function actuallyDisconnect() {
     wantedProfileId = null;
     wantedEpoch = null;
+    playback = null;
+    replayT0 = null;
+    wantedGeneration = null;
     busy = true;
     try {
       await disconnectSession();
@@ -331,6 +370,9 @@
       if (!savePrompt) {
         recordStatus = null;
       }
+      playback = null;
+      replayT0 = null;
+      wantedGeneration = null;
     } catch (err) {
       error = errorMessage(err);
     } finally {
@@ -501,6 +543,78 @@
     return true;
   }
 
+  function acceptPlayback(payload: PlaybackProgress) {
+    if (wantedEpoch == null) {
+      return;
+    }
+    if (payload.epoch != null && payload.epoch !== wantedEpoch) {
+      return;
+    }
+    const generation = payload.generation;
+    if (payload.state === "stopped") {
+      if (wantedGeneration != null && generation != null && generation !== wantedGeneration) {
+        return;
+      }
+    } else if (wantedGeneration != null && generation != null && generation < wantedGeneration) {
+      return;
+    }
+    if (payload.state === "playing" && generation != null) {
+      wantedGeneration = generation;
+    }
+    playback = payload;
+    if (payload.state === "playing" && (replayT0 == null || payload.index === 0)) {
+      replayT0 = payload.tMs;
+    }
+    if (payload.state === "stopped") {
+      replayT0 = payload.index === 0 ? null : replayT0;
+    }
+  }
+
+  async function playRecording(path: string, profileId: string) {
+    clearMessages();
+    busy = true;
+    try {
+      if (!isSessionOpen(sessionStatus.status)) {
+        await requestConnect(profileId);
+      }
+      const reply = await startReplay(path, profileId);
+      if (wantedEpoch == null) {
+        wantedEpoch = reply.epoch;
+      }
+      wantedGeneration = reply.generation;
+      replayT0 = reply.tMs;
+      playback = {
+        file: reply.file,
+        index: 0,
+        total: reply.total,
+        tMs: reply.tMs,
+        tEndMs: reply.tEndMs,
+        state: "playing",
+        epoch: reply.epoch,
+        generation: reply.generation,
+      };
+    } catch (err) {
+      error = errorMessage(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function stopPlayback() {
+    error = null;
+    busy = true;
+    try {
+      await stopReplaySession();
+      if (playback?.state === "playing") {
+        playback = { ...playback, state: "stopped" };
+      }
+    } catch (err) {
+      error = errorMessage(err);
+    } finally {
+      busy = false;
+    }
+  }
+
   async function applyIngest(enabled: boolean) {
     if (!isSessionOpen(sessionStatus.status)) {
       return;
@@ -607,6 +721,16 @@
         const closeRequestedUnlisten = await listen("app/close-requested", () => {
           void requestQuit();
         });
+        const playbackUnlisten = await listen<PlaybackProgress>("playback/progress", (event) => {
+          acceptPlayback(event.payload);
+        });
+        const tabUnlisten = await listen<string>("menu/tab", (event) => {
+          if (event.payload === "playback") {
+            selectTab("playback");
+          } else if (event.payload === "explorer") {
+            selectTab("explorer");
+          }
+        });
         const settingsErrorUnlisten = await listen<string>("settings/error", (event) => {
           settingsError = event.payload;
           settingsOpen = true;
@@ -622,6 +746,8 @@
           recordUnlisten();
           toggleRecordingUnlisten();
           closeRequestedUnlisten();
+          playbackUnlisten();
+          tabUnlisten();
           settingsErrorUnlisten();
           return;
         }
@@ -636,6 +762,8 @@
           recordUnlisten,
           toggleRecordingUnlisten,
           closeRequestedUnlisten,
+          playbackUnlisten,
+          tabUnlisten,
           settingsErrorUnlisten,
         );
       } catch (err) {
@@ -704,6 +832,17 @@
             <span class="stats">{storeUsage}</span>
           {/if}
         {/if}
+        {#if replaying && tab === "explorer" && playback}
+          <button type="button" class="replay-label" onclick={() => selectTab("playback")}>
+            Replaying {playback.file}
+            <span class="replay-time">
+              {formatClock(replaySpan.elapsed)} / {formatClock(replaySpan.duration)}
+            </span>
+          </button>
+          <button type="button" class="replay-stop" disabled={busy} onclick={() => void stopPlayback()}>
+            Stop
+          </button>
+        {/if}
         {#if sessionStatus.error}
           <span class="session-error">{sessionStatus.error}</span>
         {/if}
@@ -739,6 +878,36 @@
     </header>
   {/if}
 
+  <nav class="tabs" aria-label="App">
+    {#if sessionOpen}
+      <button
+        type="button"
+        class:active={tab === "explorer"}
+        onclick={() => selectTab("explorer")}
+      >
+        Explorer
+      </button>
+    {:else}
+      <button
+        type="button"
+        class:active={tab === "connections"}
+        onclick={() => selectTab("connections")}
+      >
+        Connections
+      </button>
+    {/if}
+    <button
+      type="button"
+      class:active={tab === "playback"}
+      onclick={() => selectTab("playback")}
+    >
+      Playback
+    </button>
+    {#if !showHeader}
+      <button type="button" class="gear" aria-label="Settings" onclick={openSettings}>⚙</button>
+    {/if}
+  </nav>
+
   <div class="chrome" inert={draft !== null}>
     {#if error}
       <p class="banner error" role="alert">{error}</p>
@@ -752,7 +921,21 @@
       </p>
     {/if}
 
-    {#if showPicker}
+    {#if showPlayback}
+      <Playback
+        {profiles}
+        lastUsedId={lastUsedId}
+        {sessionOpen}
+        sessionProfileId={sessionStatus.profileId}
+        sessionBroker={sessionStatus.broker}
+        {ingestEnabled}
+        {playback}
+        {busy}
+        t0Ms={replayT0}
+        onplay={(path, profileId) => void playRecording(path, profileId)}
+        onstop={() => void stopPlayback()}
+      />
+    {:else if showPicker}
       <ConnectionPicker
         {profiles}
         {lastUsedName}
@@ -929,6 +1112,64 @@
     display: flex;
     gap: var(--space-2);
     margin-left: auto;
+  }
+
+  .tabs {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 0 var(--space-5);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elevated);
+  }
+
+  .tabs button {
+    border: 0;
+    background: transparent;
+    padding: 0.55rem 0.7rem;
+    color: var(--fg-muted);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    border-radius: 0;
+  }
+
+  .tabs button.active {
+    color: var(--fg);
+    border-bottom-color: var(--accent);
+  }
+
+  .tabs .gear {
+    margin-left: auto;
+    width: 2rem;
+    padding: 0.35rem 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+  }
+
+  .replay-label {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    border: 1px solid var(--border);
+    background: var(--bg-hover);
+    border-radius: var(--radius-sm);
+    padding: 0.2rem 0.55rem;
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--fg);
+  }
+
+  .replay-time {
+    color: var(--fg-muted);
+  }
+
+  .replay-stop {
+    border: 1px solid var(--danger);
+    background: color-mix(in srgb, var(--danger) 16%, transparent);
+    color: var(--danger);
+    border-radius: var(--radius-sm);
+    padding: 0.2rem 0.55rem;
+    font-size: 12px;
   }
 
   header button {

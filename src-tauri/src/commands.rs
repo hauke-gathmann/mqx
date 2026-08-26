@@ -1,13 +1,15 @@
 use std::path::PathBuf;
 use std::sync::MutexGuard;
-
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use mqx_core::{
-    ConnectionProfile, HistoryItemDto, HistoryMeta, JqApplyResult, JqHistory, LiveHandle,
+    AppDirs, ConnectionProfile, HistoryItemDto, HistoryMeta, JqApplyResult, JqHistory, LiveHandle,
     MessageDto, ProfileStore, ProfileSummary, RECORDING_KIND, RecordStatus, RecordingContext,
-    RecordingHeader, SearchHitDto, SearchMode, SessionEvent, SessionStatus, StoppedRecording,
-    TreeBatch, TreeNodeDto, clamp_ram_limit_bytes, unix_ms_to_rfc3339,
+    RecordingHeader, RecordingInfo, ReplayJob, SearchHitDto, SearchMode, SessionEvent,
+    SessionStatus, Status, StoppedRecording, TreeBatch, TreeNodeDto, assert_replay_target,
+    clamp_ram_limit_bytes, list_recordings as scan_recordings, load_replay_events, run_replay,
+    unix_ms_to_rfc3339,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -100,6 +102,31 @@ impl PendingRecording {
     fn matches_path(&self, temp_path: &str) -> bool {
         self.temp_path.as_path() == std::path::Path::new(temp_path)
     }
+}
+
+fn locked_replay(
+    state: &AppState,
+) -> Result<MutexGuard<'_, Option<tauri::async_runtime::JoinHandle<()>>>, String> {
+    state
+        .replay
+        .lock()
+        .map_err(|_| "replay lock poisoned".into())
+}
+
+fn locked_scans(state: &AppState) -> Result<MutexGuard<'_, mqx_core::RecordingScanCache>, String> {
+    state
+        .recording_scans
+        .lock()
+        .map_err(|_| "recording scan cache lock poisoned".into())
+}
+
+async fn abort_replay(state: &AppState) -> Result<(), String> {
+    let job = locked_replay(state)?.take();
+    if let Some(job) = job {
+        job.abort();
+        let _ = job.await;
+    }
+    Ok(())
 }
 
 fn normalize_theme(theme: &str) -> Result<String, String> {
@@ -255,6 +282,18 @@ pub struct StatusReply {
     epoch: u64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplayReply {
+    status: &'static str,
+    epoch: u64,
+    generation: u64,
+    file: String,
+    total: u64,
+    t_ms: u64,
+    t_end_ms: u64,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SaveProfileRequest {
@@ -374,10 +413,11 @@ pub async fn connect(
     };
 
     let _replace = state.replace.lock().await;
-    let previous = locked_live(&state)?.take();
-    // Drop old forwarder events before join so same-profile reconnect
-    // cannot apply the previous session's disconnected/stats.
+    // Drop old forwarder events before abort/join so a late Stopped cannot
+    // apply after the UI has already gone idle (or onto a new session).
     state.current_epoch.store(0, Ordering::SeqCst);
+    abort_replay(&state).await?;
+    let previous = locked_live(&state)?.take();
     if let Some(previous) = previous {
         finish_handle_recording(&app, &state, previous).await?;
     }
@@ -414,6 +454,7 @@ pub async fn connect(
                     }
                     app.emit("record/status", payload)
                 }
+                SessionEvent::Playback(payload) => app.emit("playback/progress", payload),
             };
         }
     });
@@ -427,8 +468,9 @@ pub async fn connect(
 #[tauri::command(rename = "disconnect")]
 pub async fn disconnect(app: AppHandle, state: State<'_, AppState>) -> Result<StatusReply, String> {
     let _replace = state.replace.lock().await;
-    let handle = locked_live(&state)?.take();
     state.current_epoch.store(0, Ordering::SeqCst);
+    abort_replay(&state).await?;
+    let handle = locked_live(&state)?.take();
     if let Some(handle) = handle {
         finish_handle_recording(&app, &state, handle).await?;
     }
@@ -646,29 +688,6 @@ fn clear_stopped_matching(state: &AppState, temp_path: &str) {
     }
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecordingFileDto {
-    name: String,
-    path: String,
-}
-
-#[tauri::command(rename = "listRecordings")]
-pub fn list_recordings(state: State<AppState>) -> Result<Vec<RecordingFileDto>, String> {
-    let directory = recordings_dir(&state)?;
-    let files = mqx_core::list_recording_files(&directory).map_err(err)?;
-    Ok(files
-        .into_iter()
-        .map(|path| RecordingFileDto {
-            name: path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            path: path.to_string_lossy().into_owned(),
-        })
-        .collect())
-}
-
 fn apply_set_ingest(live: Option<&LiveHandle>, enabled: bool) -> Result<SessionStatus, String> {
     let handle = live.ok_or_else(|| "no active session".to_string())?;
     handle.set_ingest(enabled)
@@ -678,6 +697,146 @@ fn apply_set_ingest(live: Option<&LiveHandle>, enabled: bool) -> Result<SessionS
 pub fn set_ingest(state: State<AppState>, enabled: bool) -> Result<SessionStatus, String> {
     let live = locked_live(&state)?;
     apply_set_ingest(live.as_ref(), enabled)
+}
+
+fn replay_target_for_live(
+    live: Option<&LiveHandle>,
+    profile_id: Option<&str>,
+) -> Result<(), String> {
+    let handle = live.ok_or_else(|| "no active session".to_string())?;
+    let session = handle
+        .session()
+        .map_err(|_| "session lock poisoned".to_string())?;
+    assert_replay_target(&session, profile_id)
+}
+
+async fn wait_session_ready(state: &AppState, epoch: u64) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        {
+            let live = locked_live(state)?;
+            let handle = live.as_ref().ok_or_else(|| "session closed".to_string())?;
+            if handle.epoch() != epoch {
+                return Err("session replaced".into());
+            }
+            let session = handle
+                .session()
+                .map_err(|_| "session lock poisoned".to_string())?;
+            match &session.status {
+                Status::Connected | Status::Detached { .. } => return Ok(()),
+                Status::Error { msg } => return Err(msg.clone()),
+                Status::Disconnected => return Err("disconnected".into()),
+                Status::Connecting | Status::Reconnecting { .. } => {}
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("timed out waiting for broker connection".into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingsList {
+    directory: String,
+    recordings: Vec<RecordingInfo>,
+}
+
+#[tauri::command(rename = "listRecordings")]
+pub fn list_recordings(state: State<AppState>) -> Result<RecordingsList, String> {
+    let directory = recordings_dir(&state)?;
+    let recordings = {
+        let mut cache = locked_scans(&state)?;
+        scan_recordings(&directory, &mut cache).map_err(err)?
+    };
+    Ok(RecordingsList {
+        directory: directory.to_string_lossy().into_owned(),
+        recordings,
+    })
+}
+
+#[tauri::command(rename = "startReplay")]
+pub async fn start_replay(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    profile_id: Option<String>,
+) -> Result<ReplayReply, String> {
+    let path = PathBuf::from(path);
+    let file = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "invalid recording path".to_string())?;
+    let path_for_load = path.clone();
+    let events = tauri::async_runtime::spawn_blocking(move || load_replay_events(&path_for_load))
+        .await
+        .map_err(|error| format!("replay load: {error}"))?
+        .map_err(err)?;
+    let total = events.len() as u64;
+    let t_ms = events[0].t_ms;
+    let t_end_ms = events.last().map(|event| event.t_ms).unwrap_or(t_ms);
+
+    let connected = locked_live(&state)?.is_some();
+    if connected {
+        replay_target_for_live(locked_live(&state)?.as_ref(), profile_id.as_deref())?;
+    } else {
+        let id = profile_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| "profileId is required when no session is open".to_string())?
+            .to_string();
+        connect(app.clone(), state.clone(), id).await?;
+    }
+
+    wait_session_ready(&state, {
+        let live = locked_live(&state)?;
+        let handle = live
+            .as_ref()
+            .ok_or_else(|| "no active session".to_string())?;
+        handle.epoch()
+    })
+    .await?;
+
+    let generation = state.replay_generation.fetch_add(1, Ordering::SeqCst) + 1;
+    abort_replay(&state).await?;
+
+    let (client, epoch, events_tx) = {
+        let live = locked_live(&state)?;
+        replay_target_for_live(live.as_ref(), profile_id.as_deref())?;
+        let handle = live
+            .as_ref()
+            .ok_or_else(|| "no active session".to_string())?;
+        (handle.client(), handle.epoch(), handle.events())
+    };
+
+    let job = tauri::async_runtime::spawn(run_replay(ReplayJob {
+        client,
+        events,
+        file: file.clone(),
+        epoch,
+        generation,
+        events_tx,
+    }));
+    *locked_replay(&state)? = Some(job);
+
+    Ok(ReplayReply {
+        status: "playing",
+        epoch,
+        generation,
+        file,
+        total,
+        t_ms,
+        t_end_ms,
+    })
+}
+
+#[tauri::command(rename = "stopReplay")]
+pub async fn stop_replay(state: State<'_, AppState>) -> Result<&'static str, String> {
+    abort_replay(&state).await?;
+    Ok("ok")
 }
 
 #[tauri::command(rename = "treeChildren")]
@@ -779,7 +938,7 @@ pub fn jq_history(state: State<AppState>, topic: String) -> Result<Vec<String>, 
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_set_ingest, apply_start_recording};
+    use super::{apply_set_ingest, apply_start_recording, replay_target_for_live};
 
     #[test]
     fn set_ingest_without_session_errors() {
@@ -792,6 +951,12 @@ mod tests {
     #[test]
     fn start_recording_without_session_errors() {
         let err = apply_start_recording(None, std::path::PathBuf::from("/tmp")).unwrap_err();
+        assert_eq!(err, "no active session");
+    }
+
+    #[test]
+    fn start_replay_without_session_errors() {
+        let err = replay_target_for_live(None, Some("p")).unwrap_err();
         assert_eq!(err, "no active session");
     }
 }

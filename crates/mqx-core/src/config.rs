@@ -43,6 +43,7 @@ impl AppDirs {
         };
         fs::create_dir_all(&this.config_dir)?;
         fs::create_dir_all(&this.cache_dir)?;
+        fs::create_dir_all(&this.data_dir)?;
         Ok(this)
     }
 

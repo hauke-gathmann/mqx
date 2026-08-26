@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, File},
     io::{BufRead, BufReader, BufWriter, Read, Write},
     path::{Component, Path, PathBuf},
@@ -9,7 +9,7 @@ use std::{
         mpsc::{self, SyncSender, TrySendError},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
@@ -24,6 +24,7 @@ use crate::{
 pub const RECORDING_KIND: &str = "mqx-recording";
 pub const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 pub const RECORDER_QUEUE: usize = 8192;
+pub const MAX_RECORDING_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -123,6 +124,213 @@ pub fn load_recording(
     load_recording_from(BufReader::new(file)).map_err(|err| err.with_recording_path(path))
 }
 
+pub fn check_recording_size(len: u64) -> Result<()> {
+    if len > MAX_RECORDING_BYTES {
+        Err(Error::Recording("recording exceeds 4 GiB".into()))
+    } else {
+        Ok(())
+    }
+}
+
+/// Load events for V2 replay. Refuses files over 4 GiB and headers with `v` > 1.
+pub fn load_replay_events(path: impl AsRef<Path>) -> Result<Vec<RecordEvent>> {
+    let path = path.as_ref();
+    let meta = fs::metadata(path)?;
+    check_recording_size(meta.len()).map_err(|err| err.with_recording_path(path))?;
+    let (_header, events) = load_recording(path)?;
+    if events.is_empty() {
+        return Err(
+            Error::Recording("recording contains no events".into()).with_recording_path(path)
+        );
+    }
+    Ok(events)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingInfo {
+    pub path: String,
+    pub name: String,
+    pub file_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_t_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_t_ms: Option<u64>,
+    pub messages: u64,
+    pub topics: u64,
+    pub bytes: u64,
+    pub mtime_ms: u64,
+}
+
+#[derive(Default)]
+pub struct RecordingScanCache {
+    entries: HashMap<PathBuf, CachedRecording>,
+}
+
+struct CachedRecording {
+    mtime: SystemTime,
+    len: u64,
+    info: RecordingInfo,
+}
+
+impl RecordingScanCache {
+    pub fn get_or_inspect(&mut self, path: &Path, meta: &fs::Metadata) -> Result<RecordingInfo> {
+        let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let len = meta.len();
+        if let Some(cached) = self.entries.get(path)
+            && cached.mtime == mtime
+            && cached.len == len
+        {
+            return Ok(cached.info.clone());
+        }
+        let info = inspect_recording(path, meta)?;
+        self.entries.insert(
+            path.to_path_buf(),
+            CachedRecording {
+                mtime,
+                len,
+                info: info.clone(),
+            },
+        );
+        Ok(info)
+    }
+}
+
+/// `*.jsonl` in `dir`, skipping dotfiles. Headerless files are scanned once per mtime.
+pub fn list_recordings(dir: &Path, cache: &mut RecordingScanCache) -> Result<Vec<RecordingInfo>> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(meta) if meta.is_file() => meta,
+            _ => continue,
+        };
+        seen.insert(path.clone());
+        match cache.get_or_inspect(&path, &meta) {
+            Ok(info) => out.push(info),
+            Err(_) => continue,
+        }
+    }
+    cache.entries.retain(|path, _| seen.contains(path));
+    out.sort_by(|a, b| {
+        b.mtime_ms
+            .cmp(&a.mtime_ms)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(out)
+}
+
+pub fn inspect_recording(path: &Path, meta: &fs::Metadata) -> Result<RecordingInfo> {
+    let file = fs::File::open(path)?;
+    inspect_recording_from(BufReader::new(file), path, meta)
+        .map_err(|err| err.with_recording_path(path))
+}
+
+fn inspect_recording_from(
+    mut reader: impl BufRead,
+    path: &Path,
+    meta: &fs::Metadata,
+) -> Result<RecordingInfo> {
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = path
+        .file_stem()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| file_name.clone());
+    let bytes = meta.len();
+    let mtime_ms = meta
+        .modified()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let mut header = None;
+    let mut first_t_ms = None;
+    let mut last_t_ms = None;
+    let mut messages = 0u64;
+    let mut topics = HashSet::new();
+    let mut first_nonempty = true;
+    let mut line_no = 0usize;
+    while let Some(line) = read_line_capped(&mut reader, MAX_LINE_BYTES)
+        .map_err(|err| err.with_recording_line(line_no + 1))?
+    {
+        line_no += 1;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if first_nonempty {
+            first_nonempty = false;
+            match sniff_line(&line).map_err(|err| err.with_recording_line(line_no))? {
+                RecordingLine::Header(parsed) => {
+                    header = Some(parsed);
+                    break;
+                }
+                RecordingLine::Event(event) => {
+                    first_t_ms = Some(event.t_ms);
+                    last_t_ms = Some(event.t_ms);
+                    topics.insert(event.topic);
+                    messages = 1;
+                }
+            }
+            continue;
+        }
+        let event =
+            RecordEvent::from_jsonl(&line).map_err(|err| err.with_recording_line(line_no))?;
+        if first_t_ms.is_none() {
+            first_t_ms = Some(event.t_ms);
+        }
+        last_t_ms = Some(event.t_ms);
+        topics.insert(event.topic);
+        messages = messages.saturating_add(1);
+    }
+
+    if let Some(header) = header {
+        return Ok(RecordingInfo {
+            path: path.display().to_string(),
+            name,
+            file_name,
+            started_at: Some(header.started_at),
+            first_t_ms: None,
+            last_t_ms: None,
+            messages: header.messages,
+            topics: header.topics,
+            bytes,
+            mtime_ms,
+        });
+    }
+
+    Ok(RecordingInfo {
+        path: path.display().to_string(),
+        name,
+        file_name,
+        started_at: None,
+        first_t_ms,
+        last_t_ms,
+        messages,
+        topics: topics.len() as u64,
+        bytes,
+        mtime_ms,
+    })
+}
+
 pub fn load_recording_from(
     mut reader: impl BufRead,
 ) -> Result<(Option<RecordingHeader>, Vec<RecordEvent>)> {
@@ -140,7 +348,14 @@ pub fn load_recording_from(
         if first_nonempty {
             first_nonempty = false;
             match sniff_line(&line).map_err(|err| err.with_recording_line(line_no))? {
-                RecordingLine::Header(parsed) => header = Some(parsed),
+                RecordingLine::Header(parsed) => {
+                    if parsed.v > 1 {
+                        return Err(
+                            Error::Recording("upgrade mqx".into()).with_recording_line(line_no)
+                        );
+                    }
+                    header = Some(parsed);
+                }
                 RecordingLine::Event(event) => events.push(event),
             }
         } else {
@@ -267,7 +482,7 @@ struct WriterStats {
 pub struct Recorder {
     tx: Option<SyncSender<Inbound>>,
     stats: Arc<SharedStats>,
-    thread: Option<JoinHandle<Result<WriterStats>>>,
+    thread: Option<JoinHandle<WriterStats>>,
     path: PathBuf,
     started_ms: u64,
 }
@@ -339,7 +554,12 @@ impl Recorder {
                     warn!(dropped, "recorder queue full; dropping events");
                 }
             }
-            Err(TrySendError::Disconnected(_)) => {}
+            Err(TrySendError::Disconnected(_)) => {
+                let dropped = self.stats.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                if dropped == 1 || dropped.is_multiple_of(1000) {
+                    warn!(dropped, "recorder writer gone; dropping events");
+                }
+            }
         }
     }
 
@@ -364,15 +584,15 @@ impl Recorder {
     fn finish(&mut self) -> Result<StoppedRecording> {
         drop(self.tx.take());
         let writer = if let Some(thread) = self.thread.take() {
-            thread
-                .join()
-                .map_err(|_| Error::Recording("recorder thread panicked".into()))??
-        } else {
-            WriterStats {
-                messages: self.stats.messages.load(Ordering::Relaxed),
-                bytes: self.stats.bytes.load(Ordering::Relaxed),
-                topics: self.stats.topics.load(Ordering::Relaxed),
+            match thread.join() {
+                Ok(stats) => stats,
+                Err(_) => {
+                    warn!("recorder thread panicked");
+                    self.snapshot_stats()
+                }
             }
+        } else {
+            self.snapshot_stats()
         };
         Ok(StoppedRecording {
             temp_path: self.path.clone(),
@@ -383,6 +603,14 @@ impl Recorder {
             dropped: self.stats.dropped.load(Ordering::Relaxed),
             bytes: writer.bytes,
         })
+    }
+
+    fn snapshot_stats(&self) -> WriterStats {
+        WriterStats {
+            messages: self.stats.messages.load(Ordering::Relaxed),
+            bytes: self.stats.bytes.load(Ordering::Relaxed),
+            topics: self.stats.topics.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -395,19 +623,28 @@ impl Drop for Recorder {
     }
 }
 
-fn writer_loop(
-    file: File,
-    rx: mpsc::Receiver<Inbound>,
-    stats: Arc<SharedStats>,
-) -> Result<WriterStats> {
+fn writer_loop(file: File, rx: mpsc::Receiver<Inbound>, stats: Arc<SharedStats>) -> WriterStats {
     let mut out = BufWriter::new(file);
     let mut topics = HashSet::new();
     let mut messages = 0u64;
     let mut bytes = 0u64;
     while let Ok(inbound) = rx.recv() {
         let event = RecordEvent::from_inbound(&inbound);
-        let line = event.to_jsonl()?;
-        writeln!(out, "{line}")?;
+        let line = match event.to_jsonl() {
+            Ok(line) => line,
+            Err(error) => {
+                warn!(%error, "recorder serialize failed");
+                stats.dropped.fetch_add(1, Ordering::Relaxed);
+                drain_dropped(&rx, &stats);
+                break;
+            }
+        };
+        if let Err(error) = writeln!(out, "{line}") {
+            warn!(%error, "recorder write failed");
+            stats.dropped.fetch_add(1, Ordering::Relaxed);
+            drain_dropped(&rx, &stats);
+            break;
+        }
         messages = messages.saturating_add(1);
         bytes = bytes.saturating_add(line.len() as u64).saturating_add(1);
         topics.insert(event.topic);
@@ -415,12 +652,24 @@ fn writer_loop(
         stats.bytes.store(bytes, Ordering::Relaxed);
         stats.topics.store(topics.len() as u64, Ordering::Relaxed);
     }
-    out.flush()?;
-    Ok(WriterStats {
+    if let Err(error) = out.flush() {
+        warn!(%error, "recorder flush failed");
+    }
+    WriterStats {
         messages,
         bytes,
         topics: topics.len() as u64,
-    })
+    }
+}
+
+fn drain_dropped(rx: &mpsc::Receiver<Inbound>, stats: &SharedStats) {
+    let mut extra = 0u64;
+    while rx.try_recv().is_ok() {
+        extra += 1;
+    }
+    if extra > 0 {
+        stats.dropped.fetch_add(extra, Ordering::Relaxed);
+    }
 }
 
 pub fn validate_recording_name(name: &str) -> Result<()> {
@@ -463,7 +712,7 @@ pub fn save_recording(
     }
     {
         let mut src = File::open(temp_path)?;
-        let mut dest_file = BufWriter::new(create_private_file(&dest)?);
+        let mut dest_file = BufWriter::new(create_exclusive_private_file(&dest)?);
         writeln!(dest_file, "{}", header.to_jsonl()?)?;
         std::io::copy(&mut src, &mut dest_file)?;
         dest_file.flush()?;
@@ -539,6 +788,41 @@ fn create_private_file(path: &Path) -> Result<File> {
     }
 }
 
+fn create_exclusive_private_file(path: &Path) -> Result<File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|error| already_exists_or(error, path))?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(path)
+            .map_err(|error| already_exists_or(error, path))
+    }
+}
+
+fn already_exists_or(error: std::io::Error, path: &Path) -> Error {
+    if error.kind() == std::io::ErrorKind::AlreadyExists {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("file");
+        Error::Recording(format!("a recording named {name} already exists"))
+    } else {
+        error.into()
+    }
+}
+
 fn now_ms() -> u64 {
     unix_ms(std::time::SystemTime::now())
 }
@@ -567,7 +851,12 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::{
+        fs,
+        io::Write,
+        path::{Path, PathBuf},
+        time::{Duration, SystemTime},
+    };
 
     fn fixture(name: &str) -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -777,6 +1066,41 @@ mod tests {
     }
 
     #[test]
+    fn disconnected_increments_dropped() {
+        let (recorder, rx) = Recorder::with_channel(4);
+        drop(rx);
+        recorder.try_append(&inbound("a"));
+        recorder.try_append(&inbound("b"));
+        assert_eq!(recorder.status(1).dropped, 2);
+    }
+
+    #[test]
+    fn stop_returns_partial_after_writer_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".mqx-err.jsonl");
+        std::fs::write(&path, b"").unwrap();
+        let stats = Arc::new(SharedStats {
+            messages: AtomicU64::new(4),
+            bytes: AtomicU64::new(10),
+            topics: AtomicU64::new(2),
+            dropped: AtomicU64::new(1),
+        });
+        let recorder = Recorder {
+            tx: None,
+            stats,
+            thread: Some(std::thread::spawn(|| panic!("disk full"))),
+            path: path.clone(),
+            started_ms: 1,
+        };
+        let stopped = recorder.stop().unwrap();
+        assert_eq!(stopped.messages, 4);
+        assert_eq!(stopped.topics, 2);
+        assert_eq!(stopped.dropped, 1);
+        assert_eq!(stopped.temp_path, path);
+        assert!(path.exists());
+    }
+
+    #[test]
     fn save_recording_prepends_header_and_skips_dotfiles() {
         let dir = tempfile::tempdir().unwrap();
         let temp = dir.path().join(".mqx-2.jsonl");
@@ -799,6 +1123,30 @@ mod tests {
     }
 
     #[test]
+    fn save_recording_does_not_overwrite_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let first_temp = dir.path().join(".mqx-3.jsonl");
+        let second_temp = dir.path().join(".mqx-4.jsonl");
+        std::fs::write(
+            &first_temp,
+            b"{\"t_ms\":1,\"topic\":\"a\",\"qos\":0,\"retain\":false,\"payload\":\"\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &second_temp,
+            b"{\"t_ms\":2,\"topic\":\"b\",\"qos\":0,\"retain\":false,\"payload\":\"\"}\n",
+        )
+        .unwrap();
+        let dest = save_recording(&first_temp, dir.path(), "lamp.jsonl", &sample_header()).unwrap();
+        let err =
+            save_recording(&second_temp, dir.path(), "lamp.jsonl", &sample_header()).unwrap_err();
+        assert!(matches!(err, Error::Recording(message) if message.contains("already exists")));
+        assert!(second_temp.exists());
+        let (_, events) = load_recording(&dest).unwrap();
+        assert_eq!(events[0].topic, "a");
+    }
+
+    #[test]
     fn unix_ms_to_rfc3339_epoch() {
         assert_eq!(unix_ms_to_rfc3339(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(unix_ms_to_rfc3339(1), "1970-01-01T00:00:00.001Z");
@@ -817,5 +1165,120 @@ mod tests {
             & 0o777;
         assert_eq!(mode, 0o600);
         recorder.stop().unwrap();
+    }
+
+    #[test]
+    fn header_v2_is_refused_before_event_lines() {
+        let data = concat!(
+            r#"{"kind":"mqx-recording","v":2,"startedAt":"2026-08-26T12:00:00.000Z","endedAt":"2026-08-26T12:00:01.000Z","profileId":"p","profileName":"n","broker":"mqtt://localhost:1883","messages":1,"topics":1,"appVersion":"9.0.0"}"#,
+            "\n",
+            "this is not an event\n",
+        );
+        let err = load_recording_from(data.as_bytes()).unwrap_err();
+        assert!(
+            matches!(err, Error::Recording(ref msg) if msg.contains("upgrade mqx")),
+            "{err}"
+        );
+    }
+
+    fn write_jsonl(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    #[test]
+    fn files_larger_than_4_gib_are_refused() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        tmp.as_file().set_len(MAX_RECORDING_BYTES + 1).unwrap();
+        let err = load_replay_events(tmp.path()).unwrap_err();
+        assert!(
+            matches!(err, Error::Recording(ref msg) if msg.contains("4 GiB")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn load_replay_events_skips_header() {
+        let events = load_replay_events(fixture("header.jsonl")).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].topic, "home/lamp");
+    }
+
+    #[test]
+    fn inspect_header_uses_header_stats() {
+        let path = fixture("header.jsonl");
+        let meta = fs::metadata(&path).unwrap();
+        let info = inspect_recording(&path, &meta).unwrap();
+        assert_eq!(info.name, "header");
+        assert_eq!(info.started_at.as_deref(), Some("2026-08-26T12:00:00.000Z"));
+        assert_eq!(info.messages, 2);
+        assert_eq!(info.topics, 1);
+        assert!(info.first_t_ms.is_none());
+    }
+
+    #[test]
+    fn inspect_headerless_scans_counts() {
+        let path = fixture("headerless.jsonl");
+        let meta = fs::metadata(&path).unwrap();
+        let info = inspect_recording(&path, &meta).unwrap();
+        assert_eq!(info.messages, 1);
+        assert_eq!(info.topics, 1);
+        assert_eq!(info.first_t_ms, Some(1_787_735_165_782));
+        assert!(info.started_at.is_none());
+    }
+
+    #[test]
+    fn list_recordings_skips_dotfiles_and_non_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        write_jsonl(
+            dir.path(),
+            "keep.jsonl",
+            "{\"t_ms\":1,\"topic\":\"a\",\"qos\":0,\"retain\":false,\"payload\":\"YQ==\"}\n",
+        );
+        write_jsonl(
+            dir.path(),
+            ".mqx-1.jsonl",
+            "{\"t_ms\":1,\"topic\":\"hidden\",\"qos\":0,\"retain\":false,\"payload\":\"YQ==\"}\n",
+        );
+        fs::write(dir.path().join("notes.txt"), "nope").unwrap();
+        let mut cache = RecordingScanCache::default();
+        let list = list_recordings(dir.path(), &mut cache).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "keep");
+        assert_eq!(list[0].messages, 1);
+    }
+
+    #[test]
+    fn headerless_scan_cached_until_mtime_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_jsonl(
+            dir.path(),
+            "trace.jsonl",
+            "{\"t_ms\":1,\"topic\":\"a\",\"qos\":0,\"retain\":false,\"payload\":\"YQ==\"}\n",
+        );
+        let mut cache = RecordingScanCache::default();
+        let first = list_recordings(dir.path(), &mut cache).unwrap();
+        assert_eq!(first[0].messages, 1);
+        assert_eq!(cache.entries.len(), 1);
+
+        fs::write(
+            &path,
+            concat!(
+                "{\"t_ms\":1,\"topic\":\"a\",\"qos\":0,\"retain\":false,\"payload\":\"YQ==\"}\n",
+                "{\"t_ms\":2,\"topic\":\"b\",\"qos\":0,\"retain\":false,\"payload\":\"Yg==\"}\n",
+            ),
+        )
+        .unwrap();
+        let mtime = SystemTime::now() + Duration::from_secs(2);
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let second = list_recordings(dir.path(), &mut cache).unwrap();
+        assert_eq!(second[0].messages, 2);
+        assert_eq!(second[0].topics, 2);
     }
 }

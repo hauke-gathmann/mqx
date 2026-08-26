@@ -103,8 +103,13 @@ pub fn build<R: Runtime>(
     let search = MenuItemBuilder::with_id("search", "Search Topics")
         .accelerator("CmdOrCtrl+K")
         .build(app)?;
+    let explorer = MenuItemBuilder::with_id("tab-explorer", "Explorer").build(app)?;
+    let playback = MenuItemBuilder::with_id("tab-playback", "Playback").build(app)?;
     let view = SubmenuBuilder::new(app, "View")
         .item(&theme_submenu)
+        .separator()
+        .item(&explorer)
+        .item(&playback)
         .separator()
         .item(&search)
         .build()?;
@@ -147,6 +152,12 @@ pub fn on_event(app: &AppHandle, id: &str) {
         }
         "search" => {
             let _ = app.emit("menu/search", ());
+        }
+        "tab-explorer" => {
+            let _ = app.emit("menu/tab", "explorer");
+        }
+        "tab-playback" => {
+            let _ = app.emit("menu/tab", "playback");
         }
         "theme-dark" => set_theme(app, "dark"),
         "theme-light" => set_theme(app, "light"),

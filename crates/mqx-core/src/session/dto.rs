@@ -103,6 +103,30 @@ pub struct HistoryMeta {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HistoryItemDto {
+    pub index: usize,
+    pub timestamp: u64,
+    pub format: Format,
+    pub retain: bool,
+    pub qos: u8,
+    pub size: usize,
+}
+
+impl HistoryItemDto {
+    pub fn from_message(index: usize, message: &Message) -> Self {
+        Self {
+            index,
+            timestamp: system_time_ms(message.inbound.timestamp),
+            format: message.format,
+            retain: message.inbound.retain,
+            qos: message.inbound.qos.as_u8(),
+            size: message.inbound.payload.len(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchHitDto {
     pub path: String,
     pub highlights: Vec<usize>,

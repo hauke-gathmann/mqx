@@ -372,6 +372,15 @@ export type HistoryMeta = {
   latestIndex: number;
 };
 
+export type HistoryItem = {
+  index: number;
+  timestamp: number;
+  format: PayloadFormat;
+  retain: boolean;
+  qos: 0 | 1 | 2;
+  size: number;
+};
+
 export type UiSettings = {
   theme: "dark" | "light" | "system";
 };

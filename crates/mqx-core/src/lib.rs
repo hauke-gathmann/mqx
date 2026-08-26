@@ -17,8 +17,8 @@ pub use profiles::{
     SessionConfig, Subscription, TlsConfig,
 };
 pub use session::{
-    ApplyResult, HistoryMeta, JqApplyResult, JqErrorDto, LiveHandle, MessageDto, ProfileId,
-    SearchHitDto, Session, SessionEvent, SessionStats, SessionStatus, Source, Status, StatusKind,
-    Sub, TreeBatch, TreeNodeDto, broker_display,
+    ApplyResult, HistoryItemDto, HistoryMeta, JqApplyResult, JqErrorDto, LiveHandle, MessageDto,
+    ProfileId, SearchHitDto, Session, SessionEvent, SessionStats, SessionStatus, Source, Status,
+    StatusKind, Sub, TreeBatch, TreeNodeDto, broker_display,
 };
 pub use tree::{Leaf, Node, SearchHit, SearchMode, TopicTree, UpsertOutcome};

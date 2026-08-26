@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   ConnectionProfile,
   FileKind,
+  HistoryItem,
   HistoryMeta,
   JqApplyResult,
   MessageDto,
@@ -56,6 +57,10 @@ export function getMessage(topic: string, index: number | null): Promise<Message
 
 export function getHistoryMeta(topic: string): Promise<HistoryMeta> {
   return invoke<HistoryMeta>("getHistoryMeta", { topic });
+}
+
+export function listHistory(topic: string): Promise<HistoryItem[]> {
+  return invoke<HistoryItem[]>("listHistory", { topic });
 }
 
 export function treeSearch(query: string, mode: SearchMode): Promise<SearchHit[]> {

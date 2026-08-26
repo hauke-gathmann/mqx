@@ -4,12 +4,14 @@
   import {
     getHistoryMeta,
     getMessage,
+    listHistory,
     selectTopic,
     treeChildren,
     treeSearch,
   } from "./api";
   import { writeClipboard } from "./clipboard";
   import Inspector from "./Inspector.svelte";
+  import MessageList from "./MessageList.svelte";
   import TopicTree from "./TopicTree.svelte";
   import {
     ROOT,
@@ -25,6 +27,7 @@
   } from "./treeState";
   import {
     errorMessage,
+    type HistoryItem,
     type HistoryMeta,
     type MessageDto,
     type SearchHit,
@@ -47,6 +50,7 @@
   let selected = $state<string | null>(null);
   let message = $state<MessageDto | null>(null);
   let meta = $state<HistoryMeta | null>(null);
+  let history = $state<HistoryItem[]>([]);
   let historyIndex = $state<number | null>(null);
   let query = $state("");
   let mode = $state<SearchMode>("keep");
@@ -55,7 +59,7 @@
   let hits = $state<SearchHit[] | null>(null);
   let searchExpanded = $state(new Set<string>());
   let now = $state(Date.now());
-  let pane = $state<"tree" | "inspector">("tree");
+  let pane = $state<"tree" | "messages" | "inspector">("tree");
   let searchEl = $state<HTMLInputElement | null>(null);
   let loading = $state(new Set<string>([ROOT]));
   let queued = $state<TreeBatch[]>([]);
@@ -248,9 +252,10 @@
       if (token !== seq) {
         return;
       }
-      const [nextMessage, nextMeta] = await Promise.all([
+      const [nextMessage, nextMeta, nextHistory] = await Promise.all([
         getMessage(path, null),
         getHistoryMeta(path),
+        listHistory(path),
       ]);
       if (token !== seq) {
         return;
@@ -265,6 +270,7 @@
       }
       message = nextMessage;
       meta = nextMeta;
+      history = nextHistory;
       historyIndex = nextMeta.latestIndex;
     } catch (err) {
       if (token !== seq) {
@@ -281,6 +287,7 @@
   function clearInspector() {
     message = null;
     meta = null;
+    history = [];
     historyIndex = null;
   }
 
@@ -369,11 +376,15 @@
     const stamp = ++liveStamp;
     const follow = historyIndex == null || meta == null || historyIndex === meta.latestIndex;
     try {
-      const nextMeta = await getHistoryMeta(payload.topic);
+      const [nextMeta, nextHistory] = await Promise.all([
+        getHistoryMeta(payload.topic),
+        listHistory(payload.topic),
+      ]);
       if (token !== seq || stamp !== liveStamp || payload.topic !== selected) {
         return;
       }
       meta = nextMeta;
+      history = nextHistory;
       if (follow) {
         message = payload;
         historyIndex = nextMeta.latestIndex;
@@ -434,6 +445,12 @@
       event.preventDefault();
       stepHistory(-1);
     } else if (event.key === "l") {
+      event.preventDefault();
+      stepHistory(1);
+    } else if (pane !== "tree" && (event.key === "ArrowDown" || event.key === "j")) {
+      event.preventDefault();
+      stepHistory(-1);
+    } else if (pane !== "tree" && (event.key === "ArrowUp" || event.key === "k")) {
       event.preventDefault();
       stepHistory(1);
     }
@@ -539,16 +556,23 @@
         onfocuspane={() => (pane = "tree")}
       />
     </aside>
+    <section class="messages">
+      <MessageList
+        topic={selected}
+        items={history}
+        selectedIndex={historyIndex}
+        onselectindex={(index) => void openHistory(index)}
+        onfocuspane={() => (pane = "messages")}
+      />
+    </section>
     <section class="detail">
       {#key selected}
         <Inspector
           topic={selected}
           {message}
-          {meta}
           {historyIndex}
           node={selectedNode}
           {now}
-          onselectindex={(index) => void openHistory(index)}
           onfocuspane={() => (pane = "inspector")}
         />
       {/key}
@@ -576,10 +600,11 @@
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(16rem, 28%) 1fr;
+    grid-template-columns: minmax(14rem, 26%) minmax(16rem, 24%) minmax(18rem, 1fr);
   }
 
   .tree,
+  .messages,
   .detail {
     min-width: 0;
     min-height: 0;
@@ -590,7 +615,8 @@
     flex-direction: column;
   }
 
-  .tree {
+  .tree,
+  .messages {
     border-right: 1px solid var(--border);
   }
 </style>

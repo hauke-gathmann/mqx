@@ -3,8 +3,9 @@ use std::sync::MutexGuard;
 use std::sync::atomic::Ordering;
 
 use mqx_core::{
-    ConnectionProfile, HistoryMeta, JqApplyResult, JqHistory, LiveHandle, MessageDto, ProfileStore,
-    ProfileSummary, SearchHitDto, SearchMode, SessionEvent, SessionStatus, TreeNodeDto,
+    ConnectionProfile, HistoryItemDto, HistoryMeta, JqApplyResult, JqHistory, LiveHandle,
+    MessageDto, ProfileStore, ProfileSummary, SearchHitDto, SearchMode, SessionEvent,
+    SessionStatus, TreeNodeDto,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -339,6 +340,15 @@ pub fn get_history_meta(state: State<AppState>, topic: String) -> Result<History
     with_session(&state, |session| {
         session
             .get_history_meta(&topic)
+            .ok_or_else(|| format!("topic {topic} not found"))
+    })
+}
+
+#[tauri::command(rename = "listHistory")]
+pub fn list_history(state: State<AppState>, topic: String) -> Result<Vec<HistoryItemDto>, String> {
+    with_session(&state, |session| {
+        session
+            .list_history(&topic)
             .ok_or_else(|| format!("topic {topic} not found"))
     })
 }

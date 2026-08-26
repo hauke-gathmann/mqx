@@ -71,6 +71,7 @@ pub fn run() {
             commands::select_topic,
             commands::get_message,
             commands::get_history_meta,
+            commands::list_history,
             commands::tree_search,
             commands::apply_jq,
             commands::jq_history,

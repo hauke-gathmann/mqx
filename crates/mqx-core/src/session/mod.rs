@@ -7,8 +7,8 @@ use std::time::{Duration, Instant, SystemTime};
 use rumqttc::AsyncClient;
 
 pub use dto::{
-    HistoryMeta, JqApplyResult, JqErrorDto, MessageDto, SearchHitDto, SessionStats, SessionStatus,
-    StatusKind, TreeBatch, TreeNodeDto,
+    HistoryItemDto, HistoryMeta, JqApplyResult, JqErrorDto, MessageDto, SearchHitDto, SessionStats,
+    SessionStatus, StatusKind, TreeBatch, TreeNodeDto,
 };
 pub use live::{LiveHandle, SessionEvent};
 pub use tls::broker_display;
@@ -221,6 +221,21 @@ impl Session {
             count: leaf.message_count(),
             latest_index: leaf.history.len(),
         })
+    }
+
+    pub fn list_history(&self, topic: &str) -> Option<Vec<HistoryItemDto>> {
+        let leaf = self.tree.get(topic)?;
+        let mut items: Vec<HistoryItemDto> = leaf
+            .history
+            .iter()
+            .enumerate()
+            .map(|(index, message)| HistoryItemDto::from_message(index, message))
+            .collect();
+        items.push(HistoryItemDto::from_message(
+            leaf.history.len(),
+            &leaf.latest,
+        ));
+        Some(items)
     }
 
     pub fn tree_search(&self, query: &str, mode: SearchMode) -> Vec<SearchHitDto> {
@@ -472,6 +487,24 @@ mod tests {
         assert!(!home.has_payload);
         assert_eq!(home.child_count, 1);
         assert!(session.get_message("home", None).is_none());
+    }
+
+    #[test]
+    fn list_history_is_oldest_first_with_latest_last() {
+        let mut session = session();
+        session.ingest(msg("home/lamp", b"one", false));
+        session.ingest(msg("home/lamp", b"two", false));
+        session.ingest(msg("home/lamp", b"three", false));
+        let items = session.list_history("home/lamp").unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].index, 0);
+        assert_eq!(items[1].index, 1);
+        assert_eq!(items[2].index, 2);
+        assert_eq!(items[2].size, b"three".len());
+        assert_eq!(
+            session.get_history_meta("home/lamp").unwrap().latest_index,
+            2
+        );
     }
 
     #[test]

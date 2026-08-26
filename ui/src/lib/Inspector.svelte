@@ -6,7 +6,6 @@
   import { isTypingTarget, liveFreshness } from "./treeState";
   import {
     errorMessage,
-    type HistoryMeta,
     type JqApplyResult,
     type JqError,
     type MessageDto,
@@ -16,20 +15,16 @@
   let {
     topic,
     message,
-    meta,
     historyIndex,
     node = null,
     now,
-    onselectindex,
     onfocuspane,
   }: {
     topic: string | null;
     message: MessageDto | null;
-    meta: HistoryMeta | null;
     historyIndex: number | null;
     node?: TreeNodeDto | null;
     now: number;
-    onselectindex: (index: number) => void;
     onfocuspane: () => void;
   } = $props();
 
@@ -51,9 +46,6 @@
   );
   const jsonMode = $derived(shownJson !== undefined);
   const freshness = $derived(node ? liveFreshness(node, now) : null);
-  const followingLatest = $derived(
-    meta != null && historyIndex != null && historyIndex === meta.latestIndex,
-  );
 
   onMount(() => {
     if (!topic) {
@@ -201,22 +193,6 @@
     }
   }
 
-  const MAX_DOTS = 48;
-  const dots = $derived.by(() => {
-    if (!meta) {
-      return [] as number[];
-    }
-    if (meta.count <= MAX_DOTS) {
-      return Array.from({ length: meta.count }, (_, i) => i);
-    }
-    const current = historyIndex ?? meta.latestIndex;
-    const half = Math.floor(MAX_DOTS / 2);
-    let start = Math.max(0, current - half);
-    const end = Math.min(meta.count, start + MAX_DOTS);
-    start = Math.max(0, end - MAX_DOTS);
-    return Array.from({ length: end - start }, (_, i) => start + i);
-  });
-
 </script>
 
 <div class="inspector" onfocusin={onfocuspane}>
@@ -265,7 +241,7 @@
     {#if message}
       <PayloadView doc={shownText} {jsonMode} />
     {:else}
-      <p class="empty">Select a topic with a payload to inspect it.</p>
+      <p class="empty">Select a message to inspect its payload.</p>
     {/if}
   </div>
 
@@ -291,26 +267,6 @@
           <li>{err.message}</li>
         {/each}
       </ul>
-    {/if}
-    {#if meta && meta.count > 0 && historyIndex != null && message?.topic === topic}
-      <div class="history">
-        <div class="dots" role="listbox" aria-label="Message history">
-          {#each dots as index (index)}
-            <button
-              type="button"
-              class="crumb"
-              class:current={index === historyIndex}
-              role="option"
-              aria-selected={index === historyIndex}
-              aria-label="Message {index + 1} of {meta.count}"
-              onclick={() => onselectindex(index)}
-            ></button>
-          {/each}
-        </div>
-        <span class="pos">
-          {followingLatest ? "latest" : historyIndex + 1} · {historyIndex + 1}/{meta.count}
-        </span>
-      </div>
     {/if}
   </div>
 </div>
@@ -490,43 +446,5 @@
     color: var(--danger);
     font-size: 12px;
     font-family: var(--mono);
-  }
-
-  .history {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    padding: 0 var(--space-3) var(--space-2);
-  }
-
-  .dots {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .crumb {
-    width: 0.5rem;
-    height: 0.5rem;
-    padding: 0;
-    border: 0;
-    border-radius: 50%;
-    background: var(--fg-faint);
-    opacity: 0.55;
-  }
-
-  .crumb.current {
-    background: var(--accent);
-    opacity: 1;
-    transform: scale(1.25);
-  }
-
-  .pos {
-    color: var(--fg-muted);
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-    flex-shrink: 0;
   }
 </style>

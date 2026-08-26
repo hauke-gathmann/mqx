@@ -69,6 +69,132 @@
   let searchSeq = 0;
   const inflight = new Map<string, Promise<void>>();
 
+  const SPLIT_KEY = "mqx:split";
+  const DEFAULT_TREE_PCT = 26;
+  const DEFAULT_MESSAGES_PCT = 24;
+  const MIN_TREE_PX = 180;
+  const MIN_MESSAGES_PX = 200;
+  const MIN_DETAIL_PX = 240;
+
+  function readSplit(): { tree: number; messages: number } {
+    try {
+      const raw = localStorage.getItem(SPLIT_KEY);
+      if (!raw) {
+        return { tree: DEFAULT_TREE_PCT, messages: DEFAULT_MESSAGES_PCT };
+      }
+      const parsed = JSON.parse(raw) as { tree?: unknown; messages?: unknown };
+      const tree = typeof parsed.tree === "number" ? parsed.tree : DEFAULT_TREE_PCT;
+      const messages = typeof parsed.messages === "number" ? parsed.messages : DEFAULT_MESSAGES_PCT;
+      if (tree < 8 || messages < 8 || tree + messages > 88) {
+        return { tree: DEFAULT_TREE_PCT, messages: DEFAULT_MESSAGES_PCT };
+      }
+      return { tree, messages };
+    } catch {
+      return { tree: DEFAULT_TREE_PCT, messages: DEFAULT_MESSAGES_PCT };
+    }
+  }
+
+  const initialSplit = readSplit();
+  let splitEl = $state<HTMLDivElement | undefined>();
+  let treePct = $state(initialSplit.tree);
+  let messagesPct = $state(initialSplit.messages);
+  let dragging = $state<"tree" | "messages" | null>(null);
+  const detailPct = $derived(Math.max(8, 100 - treePct - messagesPct));
+  const splitStyle = $derived(
+    `minmax(${MIN_TREE_PX}px, ${treePct}fr) 7px minmax(${MIN_MESSAGES_PX}px, ${messagesPct}fr) 7px minmax(${MIN_DETAIL_PX}px, ${detailPct}fr)`,
+  );
+
+  function persistSplit() {
+    try {
+      localStorage.setItem(SPLIT_KEY, JSON.stringify({ tree: treePct, messages: messagesPct }));
+    } catch {
+      // Ignore quota / private-mode failures.
+    }
+  }
+
+  function clampSplit(nextTree: number, nextMessages: number, width: number) {
+    const minTree = (MIN_TREE_PX / width) * 100;
+    const minMessages = (MIN_MESSAGES_PX / width) * 100;
+    const minDetail = (MIN_DETAIL_PX / width) * 100;
+    const maxPair = 100 - minDetail;
+    let tree = Math.max(minTree, nextTree);
+    let messages = Math.max(minMessages, nextMessages);
+    if (tree + messages > maxPair) {
+      messages = Math.max(minMessages, maxPair - tree);
+      tree = Math.max(minTree, Math.min(tree, maxPair - messages));
+    }
+    treePct = tree;
+    messagesPct = messages;
+  }
+
+  function startDrag(which: "tree" | "messages", event: PointerEvent) {
+    const el = splitEl;
+    if (!el || event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    const handle = event.currentTarget as HTMLElement;
+    handle.setPointerCapture(event.pointerId);
+    dragging = which;
+    const width = el.getBoundingClientRect().width;
+    const originX = event.clientX;
+    const originTree = treePct;
+    const originMessages = messagesPct;
+
+    function onMove(move: PointerEvent) {
+      const dPct = ((move.clientX - originX) / width) * 100;
+      if (which === "tree") {
+        clampSplit(originTree + dPct, originMessages - dPct, width);
+      } else {
+        clampSplit(originTree, originMessages + dPct, width);
+      }
+    }
+
+    function onUp(up: PointerEvent) {
+      handle.releasePointerCapture(up.pointerId);
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      dragging = null;
+      persistSplit();
+    }
+
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  }
+
+  function nudgeSplit(which: "tree" | "messages", deltaPct: number) {
+    const width = splitEl?.getBoundingClientRect().width ?? 1000;
+    if (which === "tree") {
+      clampSplit(treePct + deltaPct, messagesPct - deltaPct, width);
+    } else {
+      clampSplit(treePct, messagesPct + deltaPct, width);
+    }
+    persistSplit();
+  }
+
+  function onGutterKey(which: "tree" | "messages", event: KeyboardEvent) {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      nudgeSplit(which, -2);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      nudgeSplit(which, 2);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      treePct = DEFAULT_TREE_PCT;
+      messagesPct = DEFAULT_MESSAGES_PCT;
+      persistSplit();
+    }
+  }
+
+  function resetSplit() {
+    treePct = DEFAULT_TREE_PCT;
+    messagesPct = DEFAULT_MESSAGES_PCT;
+    persistSplit();
+  }
+
   const SEARCH_HIT_CAP = 256;
   const SEARCH_LOAD_CAP = 64;
 
@@ -536,7 +662,7 @@
   {#if error}
     <p class="banner" role="alert">{error}</p>
   {/if}
-  <div class="split">
+  <div class="split" class:dragging bind:this={splitEl} style:grid-template-columns={splitStyle}>
     <aside class="tree">
       <TopicTree
         {rows}
@@ -556,6 +682,15 @@
         onfocuspane={() => (pane = "tree")}
       />
     </aside>
+    <button
+      type="button"
+      class="gutter"
+      aria-label="Resize topic tree"
+      title="Drag to resize. Double-click to reset."
+      onpointerdown={(event) => startDrag("tree", event)}
+      ondblclick={resetSplit}
+      onkeydown={(event) => onGutterKey("tree", event)}
+    ></button>
     <section class="messages">
       <MessageList
         topic={selected}
@@ -565,6 +700,15 @@
         onfocuspane={() => (pane = "messages")}
       />
     </section>
+    <button
+      type="button"
+      class="gutter"
+      aria-label="Resize message list"
+      title="Drag to resize. Double-click to reset."
+      onpointerdown={(event) => startDrag("messages", event)}
+      ondblclick={resetSplit}
+      onkeydown={(event) => onGutterKey("messages", event)}
+    ></button>
     <section class="detail">
       {#key selected}
         <Inspector
@@ -600,7 +744,11 @@
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(14rem, 26%) minmax(16rem, 24%) minmax(18rem, 1fr);
+  }
+
+  .split.dragging {
+    cursor: col-resize;
+    user-select: none;
   }
 
   .tree,
@@ -615,8 +763,34 @@
     flex-direction: column;
   }
 
-  .tree,
-  .messages {
-    border-right: 1px solid var(--border);
+  .gutter {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: var(--border);
+    cursor: col-resize;
+    touch-action: none;
+  }
+
+  .gutter::after {
+    content: "";
+    position: absolute;
+    inset: 0 -3px;
+  }
+
+  .gutter:hover,
+  .gutter:focus-visible,
+  .split.dragging .gutter {
+    background: var(--accent);
+  }
+
+  .gutter:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
   }
 </style>

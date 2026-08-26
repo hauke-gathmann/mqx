@@ -19,3 +19,5 @@ Useful flags:
 - `--speed 2` twice as fast; `--speed 0` as fast as possible
 - `--loop` repeat the trace until Ctrl+C
 - `--username` / `--password` (or `MQTT_TRACE_PASSWORD`)
+
+Local captures go in `recordings/` (gitignored).

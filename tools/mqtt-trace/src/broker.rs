@@ -90,7 +90,7 @@ pub fn connect(
     let mut options = MqttOptions::new(client_id, broker.host.clone(), broker.port);
     options.set_keep_alive(Duration::from_secs(30));
     options.set_clean_session(true);
-    options.set_max_packet_size(256 * 1024, 256 * 1024);
+    options.set_max_packet_size(8 * 1024 * 1024, 8 * 1024 * 1024);
     if let Some(user) = username {
         options.set_credentials(user, password.unwrap_or_default());
     }

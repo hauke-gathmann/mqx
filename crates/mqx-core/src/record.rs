@@ -12,7 +12,6 @@ use crate::error::{Error, Result};
 pub const RECORDING_KIND: &str = "mqx-recording";
 pub const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
-/// In-app JSONL header. Event lines stay mqtt-trace field names (`t_ms`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingHeader {
@@ -28,7 +27,6 @@ pub struct RecordingHeader {
     pub app_version: String,
 }
 
-/// Same JSON object as mqtt-trace `TraceEvent`. Do not camelCase.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordEvent {
     pub t_ms: u64,
@@ -80,7 +78,7 @@ impl RecordEvent {
     }
 }
 
-/// First line: header if `kind` is present, otherwise an event.
+/// Header objects have top-level `kind`; mqtt-trace events do not.
 pub fn sniff_line(line: &str) -> Result<RecordingLine> {
     let line = line.trim();
     if line.is_empty() {
@@ -147,9 +145,10 @@ fn line_has_kind(line: &str) -> bool {
 
 fn read_line_capped(reader: &mut impl BufRead, max: usize) -> Result<Option<String>> {
     let mut buf = Vec::new();
+    // +2 so a max-length line ending in `\r\n` is not rejected.
     let n = reader
         .by_ref()
-        .take(max as u64 + 1)
+        .take(max as u64 + 2)
         .read_until(b'\n', &mut buf)?;
     if n == 0 {
         return Ok(None);
@@ -301,6 +300,20 @@ mod tests {
     #[test]
     fn capped_line_rejects_over_max() {
         let mut reader = BufReader::new(&b"abcdef\n"[..]);
+        let err = read_line_capped(&mut reader, 4).unwrap_err();
+        assert!(matches!(err, Error::Recording(_)));
+    }
+
+    #[test]
+    fn capped_line_accepts_crlf_at_max() {
+        let mut reader = BufReader::new(&b"abcd\r\n"[..]);
+        let line = read_line_capped(&mut reader, 4).unwrap().unwrap();
+        assert_eq!(line, "abcd");
+    }
+
+    #[test]
+    fn capped_line_rejects_over_max_crlf() {
+        let mut reader = BufReader::new(&b"abcde\r\n"[..]);
         let err = read_line_capped(&mut reader, 4).unwrap_err();
         assert!(matches!(err, Error::Recording(_)));
     }

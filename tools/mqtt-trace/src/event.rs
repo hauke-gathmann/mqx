@@ -55,7 +55,7 @@ pub fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-/// True when the JSON object has a top-level `kind` field.
+/// Header objects have top-level `kind`; mqtt-trace events do not.
 pub fn is_recording_header(line: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(line.trim())
         .ok()

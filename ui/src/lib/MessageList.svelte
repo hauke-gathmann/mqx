@@ -1,3 +1,14 @@
+<script lang="ts" module>
+  export function listPageSize(el: HTMLElement | null | undefined): number {
+    const row = el?.querySelector<HTMLElement>(".row");
+    const height = row?.offsetHeight ?? 0;
+    if (!el || height <= 0) {
+      return 10;
+    }
+    return Math.max(1, Math.floor(el.clientHeight / height) - 1);
+  }
+</script>
+
 <script lang="ts">
   import { tick } from "svelte";
   import type { HistoryItem } from "./types";
@@ -34,16 +45,6 @@
 
   function optionId(index: number): string {
     return `message-${index}`;
-  }
-
-  function pageSize(): number {
-    const el = listEl;
-    const row = el?.querySelector<HTMLElement>(".row");
-    const height = row?.offsetHeight ?? 0;
-    if (!el || height <= 0) {
-      return 10;
-    }
-    return Math.max(1, Math.floor(el.clientHeight / height) - 1);
   }
 
   function moveSelection(delta: number) {
@@ -83,17 +84,31 @@
     } else if (event.key === "PageUp") {
       event.preventDefault();
       event.stopPropagation();
-      moveSelection(pageSize());
+      moveSelection(listPageSize(listEl));
     } else if (event.key === "PageDown") {
       event.preventDefault();
       event.stopPropagation();
-      moveSelection(-pageSize());
+      moveSelection(-listPageSize(listEl));
     }
   }
 
   function selectRow(index: number) {
     onselectindex(index);
     listEl?.focus();
+  }
+
+  function focusCurrentRowIfRowFocused() {
+    const current = listEl?.querySelector<HTMLElement>(".row.current");
+    const active = document.activeElement;
+    if (
+      current &&
+      active instanceof HTMLElement &&
+      active !== listEl &&
+      listEl?.contains(active) &&
+      active.classList.contains("row")
+    ) {
+      current.focus({ preventScroll: true });
+    }
   }
 
   $effect(() => {
@@ -125,6 +140,7 @@
         if (listEl) {
           listEl.scrollTop = 0;
         }
+        focusCurrentRowIfRowFocused();
       });
       return;
     }
@@ -147,18 +163,8 @@
 
     if (indexChanged) {
       void tick().then(() => {
-        const current = listEl?.querySelector<HTMLElement>(".row.current");
-        current?.scrollIntoView({ block: "nearest" });
-        const active = document.activeElement;
-        if (
-          current &&
-          active instanceof HTMLElement &&
-          active !== listEl &&
-          listEl?.contains(active) &&
-          active.classList.contains("row")
-        ) {
-          current.focus({ preventScroll: true });
-        }
+        listEl?.querySelector<HTMLElement>(".row.current")?.scrollIntoView({ block: "nearest" });
+        focusCurrentRowIfRowFocused();
       });
     }
   });
@@ -249,7 +255,7 @@
             class="row"
             class:current
             role="option"
-            tabindex={current ? 0 : -1}
+            tabindex="-1"
             aria-selected={current}
             onclick={() => selectRow(item.index)}
           >
@@ -345,8 +351,13 @@
     overflow-anchor: none;
   }
 
-  .scroll:focus {
+  .scroll:focus:has(.row.current) {
     outline: none;
+  }
+
+  .scroll:focus:not(:has(.row.current)) {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
 
   .row {

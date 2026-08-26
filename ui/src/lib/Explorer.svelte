@@ -11,7 +11,7 @@
   } from "./api";
   import { writeClipboard } from "./clipboard";
   import Inspector from "./Inspector.svelte";
-  import MessageList from "./MessageList.svelte";
+  import MessageList, { listPageSize } from "./MessageList.svelte";
   import TopicTree from "./TopicTree.svelte";
   import {
     ROOT,
@@ -424,10 +424,6 @@
       meta = nextMeta;
       history = nextHistory;
       historyIndex = nextMeta.latestIndex;
-      await tick();
-      if (token === seq) {
-        focusMessageList();
-      }
     } catch (err) {
       if (token !== seq) {
         return;
@@ -576,16 +572,6 @@
     }
   }
 
-  function historyPageSize(): number {
-    const el = messageListEl;
-    const row = el?.querySelector<HTMLElement>(".row");
-    const height = row?.offsetHeight ?? 0;
-    if (!el || height <= 0) {
-      return 10;
-    }
-    return Math.max(1, Math.floor(el.clientHeight / height) - 1);
-  }
-
   function jumpHistory(index: number) {
     if (meta == null) {
       return;
@@ -702,10 +688,10 @@
       jumpHistory(0);
     } else if (pane === "messages" && event.key === "PageUp") {
       event.preventDefault();
-      stepHistory(historyPageSize());
+      stepHistory(listPageSize(messageListEl));
     } else if (pane === "messages" && event.key === "PageDown") {
       event.preventDefault();
-      stepHistory(-historyPageSize());
+      stepHistory(-listPageSize(messageListEl));
     }
   }
 

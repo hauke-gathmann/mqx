@@ -420,12 +420,81 @@ export type HistoryItem = {
 export type UiSettings = {
   theme: "dark" | "light" | "system";
   ramLimitBytes: number;
+  recordDirectory: string;
 };
 
 export const DEFAULT_RAM_LIMIT_BYTES = 12 * 1024 * 1024 * 1024;
 export const RAM_LIMIT_MIN_GB = 4;
 export const RAM_LIMIT_MAX_GB = 128;
 const GIB = 1024 * 1024 * 1024;
+
+export type RecordStatus = {
+  epoch?: number;
+  active: boolean;
+  startedMs: number;
+  endedMs?: number;
+  messages: number;
+  bytes: number;
+  dropped: number;
+  topics: number;
+  path?: string;
+};
+
+export type StoppedRecording = {
+  tempPath: string;
+  messages: number;
+  topics: number;
+  startedMs: number;
+  endedMs: number;
+  dropped?: number;
+  bytes?: number;
+};
+
+export type RecordingFile = {
+  name: string;
+  path: string;
+};
+
+export function formatCount(value: number): string {
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(1)}M`;
+  }
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(1)}k`;
+  }
+  return String(value);
+}
+
+export function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (hours > 0) {
+    return `${hours}:${pad(minutes)}:${pad(seconds)}`;
+  }
+  return `${pad(minutes)}:${pad(seconds)}`;
+}
+
+export function suggestedRecordingName(broker: string, startedMs: number): string {
+  const host = hostSlug(broker);
+  const date = new Date(startedMs);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const ms = String(date.getMilliseconds()).padStart(3, "0");
+  const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}-${ms}`;
+  return `${host}-${stamp}.jsonl`;
+}
+
+function hostSlug(broker: string): string {
+  let host = broker;
+  try {
+    host = new URL(broker).hostname || broker;
+  } catch {
+    host = broker;
+  }
+  return host.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "mqtt";
+}
 
 export function idleSessionStatus(): SessionStatus {
   return {

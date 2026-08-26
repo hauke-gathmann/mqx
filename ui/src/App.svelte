@@ -4,14 +4,20 @@
   import {
     connect as connectSession,
     deleteProfile,
+    discardRecording,
     disconnect as disconnectSession,
+    exitApp,
     getProfile,
     getSettings,
     listProfiles,
     saveProfile,
+    saveRecording,
     setIngest,
     setRamLimit,
+    setRecordDirectory,
     setTheme,
+    startRecording,
+    stopRecording,
   } from "./lib/api";
   import ConnectionPicker from "./lib/ConnectionPicker.svelte";
   import Explorer from "./lib/Explorer.svelte";
@@ -26,6 +32,8 @@
     emptyDraft,
     DEFAULT_RAM_LIMIT_BYTES,
     errorMessage,
+    formatCount,
+    formatElapsed,
     formatRate,
     formatStoreUsage,
     generateClientId,
@@ -36,10 +44,14 @@
     sessionOpen as isSessionOpen,
     setLastUsedProfileId,
     statusLabel,
+    suggestedRecordingName,
     type ProfileDraft,
     type ProfileSummary,
+    type RecordStatus,
     type SessionStats,
     type SessionStatus,
+    type StoppedRecording,
+    type UiSettings,
   } from "./lib/types";
 
   let profiles = $state<ProfileSummary[]>([]);
@@ -59,6 +71,32 @@
   let ramLimitBytes = $state(DEFAULT_RAM_LIMIT_BYTES);
   let settingsOpen = $state(false);
   let settingsError = $state<string | null>(null);
+  let recordDirectory = $state("");
+  let recordStatus = $state<RecordStatus | null>(null);
+  let savePrompt = $state<{ tempPath: string; name: string; error: string | null } | null>(null);
+  let saveNameInput = $state<HTMLInputElement | null>(null);
+  let pendingDisconnect = $state(false);
+  let pendingQuit = $state(false);
+  let nowMs = $state(Date.now());
+  const recording = $derived(recordStatus?.active === true);
+
+  $effect(() => {
+    if (!recording) {
+      return;
+    }
+    nowMs = Date.now();
+    const id = setInterval(() => {
+      nowMs = Date.now();
+    }, 250);
+    return () => clearInterval(id);
+  });
+
+  $effect(() => {
+    if (savePrompt && saveNameInput) {
+      saveNameInput.focus();
+      saveNameInput.select();
+    }
+  });
 
   applyTheme(readCachedTheme());
 
@@ -112,18 +150,24 @@
     settingsError = null;
   }
 
+  function applySettings(settings: UiSettings) {
+    if (isTheme(settings.theme)) {
+      theme = settings.theme;
+      applyTheme(settings.theme);
+    }
+    if (typeof settings.recordDirectory === "string") {
+      recordDirectory = settings.recordDirectory;
+    }
+    if (typeof settings.ramLimitBytes === "number") {
+      ramLimitBytes = settings.ramLimitBytes;
+    }
+  }
+
   async function chooseTheme(next: Theme) {
     theme = next;
     applyTheme(next);
     try {
-      const settings = await setTheme(next);
-      if (isTheme(settings.theme)) {
-        theme = settings.theme;
-        applyTheme(settings.theme);
-      }
-      if (typeof settings.ramLimitBytes === "number") {
-        ramLimitBytes = settings.ramLimitBytes;
-      }
+      applySettings(await setTheme(next));
     } catch (err) {
       settingsError = errorMessage(err);
     }
@@ -132,12 +176,18 @@
   async function chooseRamLimit(bytes: number) {
     ramLimitBytes = bytes;
     try {
-      const settings = await setRamLimit(bytes);
-      if (typeof settings.ramLimitBytes === "number") {
-        ramLimitBytes = settings.ramLimitBytes;
-      }
+      applySettings(await setRamLimit(bytes));
     } catch (err) {
       settingsError = errorMessage(err);
+    }
+  }
+
+  async function chooseRecordDirectory(directory: string) {
+    try {
+      applySettings(await setRecordDirectory(directory));
+    } catch (err) {
+      settingsError = errorMessage(err);
+      settingsOpen = true;
     }
   }
 
@@ -258,6 +308,19 @@
   async function disconnect() {
     error = null;
     notice = null;
+    if (recording) {
+      pendingDisconnect = true;
+      await stopAndPrompt();
+      return;
+    }
+    if (savePrompt) {
+      pendingDisconnect = true;
+      return;
+    }
+    await actuallyDisconnect();
+  }
+
+  async function actuallyDisconnect() {
     wantedProfileId = null;
     wantedEpoch = null;
     busy = true;
@@ -265,8 +328,157 @@
       await disconnectSession();
       sessionStatus = idleSessionStatus();
       stats = null;
+      if (!savePrompt) {
+        recordStatus = null;
+      }
     } catch (err) {
       error = errorMessage(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function requestQuit() {
+    if (recording) {
+      pendingQuit = true;
+      await stopAndPrompt();
+      return;
+    }
+    if (savePrompt) {
+      pendingQuit = true;
+      return;
+    }
+    await exitApp();
+  }
+
+  async function finishPendingAction() {
+    if (pendingQuit) {
+      pendingQuit = false;
+      pendingDisconnect = false;
+      await exitApp();
+      return;
+    }
+    if (pendingDisconnect) {
+      pendingDisconnect = false;
+      await actuallyDisconnect();
+    }
+  }
+
+  function acceptRecordStatus(payload: RecordStatus) {
+    if (wantedEpoch != null && payload.epoch != null && payload.epoch !== wantedEpoch) {
+      return;
+    }
+    const wasRecording = recordStatus?.active === true;
+    recordStatus = payload.active ? payload : recordStatus;
+    if (wasRecording && !payload.active && payload.path && !savePrompt) {
+      openSavePrompt({
+        tempPath: payload.path,
+        messages: payload.messages,
+        topics: payload.topics,
+        startedMs: payload.startedMs,
+        endedMs: payload.endedMs ?? Date.now(),
+      });
+      return;
+    }
+    if (!payload.active && !savePrompt) {
+      recordStatus = null;
+    }
+  }
+
+  function openSavePrompt(stopped: Pick<StoppedRecording, "tempPath" | "messages" | "topics" | "startedMs" | "endedMs">) {
+    savePrompt = {
+      tempPath: stopped.tempPath,
+      name: suggestedRecordingName(sessionStatus.broker, stopped.startedMs),
+      error: null,
+    };
+    recordStatus = {
+      active: false,
+      startedMs: stopped.startedMs,
+      endedMs: stopped.endedMs,
+      messages: stopped.messages,
+      bytes: 0,
+      dropped: 0,
+      topics: stopped.topics,
+      path: stopped.tempPath,
+    };
+  }
+
+  async function toggleRecording() {
+    if (!isSessionOpen(sessionStatus.status) || savePrompt || busy) {
+      return;
+    }
+    if (recording) {
+      await stopAndPrompt();
+    } else {
+      await beginRecording();
+    }
+  }
+
+  async function beginRecording() {
+    error = null;
+    busy = true;
+    try {
+      recordStatus = await startRecording();
+    } catch (err) {
+      error = errorMessage(err);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function stopAndPrompt() {
+    error = null;
+    busy = true;
+    try {
+      openSavePrompt(await stopRecording());
+    } catch (err) {
+      if (recordStatus) {
+        recordStatus = { ...recordStatus, active: false };
+      }
+      error = errorMessage(err);
+      pendingDisconnect = false;
+      pendingQuit = false;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function confirmSave() {
+    const prompt = savePrompt;
+    if (!prompt) {
+      return;
+    }
+    const name = prompt.name.trim();
+    if (!name || name.includes("/") || name.includes("\\") || name.includes("..")) {
+      savePrompt = { ...prompt, error: "Name must be a file name, not a path." };
+      return;
+    }
+    busy = true;
+    try {
+      await saveRecording(prompt.tempPath, name);
+      savePrompt = null;
+      recordStatus = null;
+      await finishPendingAction();
+    } catch (err) {
+      savePrompt = { ...prompt, error: errorMessage(err) };
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function cancelSave() {
+    const prompt = savePrompt;
+    if (!prompt) {
+      return;
+    }
+    busy = true;
+    try {
+      await discardRecording(prompt.tempPath);
+      savePrompt = null;
+      recordStatus = null;
+      await finishPendingAction();
+    } catch (err) {
+      savePrompt = { ...prompt, error: errorMessage(err) };
     } finally {
       busy = false;
     }
@@ -386,6 +598,15 @@
         const ingestUnlisten = await listen<boolean>("menu/set-ingest", (event) => {
           void applyIngest(event.payload);
         });
+        const recordUnlisten = await listen<RecordStatus>("record/status", (event) => {
+          acceptRecordStatus(event.payload);
+        });
+        const toggleRecordingUnlisten = await listen("menu/toggle-recording", () => {
+          void toggleRecording();
+        });
+        const closeRequestedUnlisten = await listen("app/close-requested", () => {
+          void requestQuit();
+        });
         const settingsErrorUnlisten = await listen<string>("settings/error", (event) => {
           settingsError = event.payload;
           settingsOpen = true;
@@ -398,6 +619,9 @@
           newConnectionUnlisten();
           disconnectUnlisten();
           ingestUnlisten();
+          recordUnlisten();
+          toggleRecordingUnlisten();
+          closeRequestedUnlisten();
           settingsErrorUnlisten();
           return;
         }
@@ -409,6 +633,9 @@
           newConnectionUnlisten,
           disconnectUnlisten,
           ingestUnlisten,
+          recordUnlisten,
+          toggleRecordingUnlisten,
+          closeRequestedUnlisten,
           settingsErrorUnlisten,
         );
       } catch (err) {
@@ -416,14 +643,7 @@
       }
 
       try {
-        const settings = await getSettings();
-        if (isTheme(settings.theme)) {
-          theme = settings.theme;
-          applyTheme(settings.theme);
-        }
-        if (typeof settings.ramLimitBytes === "number") {
-          ramLimitBytes = settings.ramLimitBytes;
-        }
+        applySettings(await getSettings());
       } catch {
         applyTheme(theme);
       }
@@ -438,9 +658,22 @@
     })();
 
     function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape" && savePrompt) {
+        event.preventDefault();
+        void cancelSave();
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && event.key === ",") {
         event.preventDefault();
         openSettings();
+      }
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        event.shiftKey &&
+        (event.key === "R" || event.key === "r")
+      ) {
+        event.preventDefault();
+        void toggleRecording();
       }
     }
     window.addEventListener("keydown", onKey);
@@ -474,11 +707,30 @@
         {#if sessionStatus.error}
           <span class="session-error">{sessionStatus.error}</span>
         {/if}
+        {#if recording && recordStatus}
+          <span class="recording-pill" title="Recording to disk">
+            <span class="rec-dot">●</span>
+            Recording
+            {formatElapsed(nowMs - recordStatus.startedMs)}
+            {formatCount(recordStatus.messages)} msgs
+            {#if recordStatus.dropped > 0}
+              · {formatCount(recordStatus.dropped)} dropped
+            {/if}
+          </span>
+        {/if}
       </div>
       <div class="actions">
         {#if sessionOpen}
           <button type="button" disabled={busy} onclick={() => void applyIngest(!ingestEnabled)}>
             {ingestEnabled ? "Detach" : "Go live"}
+          </button>
+          <button
+            type="button"
+            class:stop-rec={recording}
+            disabled={busy || savePrompt !== null}
+            onclick={() => void toggleRecording()}
+          >
+            {recording ? "Stop recording" : "Record"}
           </button>
         {/if}
         <button type="button" class="gear" aria-label="Settings" onclick={openSettings}>⚙</button>
@@ -539,11 +791,43 @@
     <Settings
       {theme}
       {ramLimitBytes}
+      {recordDirectory}
       error={settingsError}
       oncancel={closeSettings}
       ontheme={(next) => void chooseTheme(next)}
       onramlimit={(bytes) => void chooseRamLimit(bytes)}
+      onrecordDirectory={(directory) => void chooseRecordDirectory(directory)}
     />
+  {/if}
+
+  {#if savePrompt}
+    <div class="backdrop">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="save-recording-title">
+        <header class="modal-header">
+          <h2 id="save-recording-title">Save recording</h2>
+        </header>
+        <form
+          class="modal-body"
+          onsubmit={(event) => {
+            event.preventDefault();
+            void confirmSave();
+          }}
+        >
+          <label>
+            Filename
+            <input bind:this={saveNameInput} bind:value={savePrompt.name} spellcheck="false" />
+          </label>
+          <p class="modal-hint">Cancel discards the capture.</p>
+          {#if savePrompt.error}
+            <p class="modal-error" role="alert">{savePrompt.error}</p>
+          {/if}
+          <footer class="modal-footer">
+            <button type="button" disabled={busy} onclick={() => void cancelSave()}>Cancel</button>
+            <button type="submit" class="primary" disabled={busy}>Save</button>
+          </footer>
+        </form>
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -679,5 +963,113 @@
   .banner.ok {
     color: var(--ok);
     background: color-mix(in srgb, var(--ok) 12%, transparent);
+  }
+
+  .recording-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--danger) 16%, transparent);
+    color: var(--danger);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .rec-dot {
+    color: var(--danger);
+  }
+
+  header button.stop-rec {
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+
+  .backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: var(--space-6) var(--space-4);
+    overflow: auto;
+    background: color-mix(in srgb, #000 45%, transparent);
+  }
+
+  .modal {
+    width: min(24rem, 100%);
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+
+  .modal-header {
+    padding: var(--space-4) var(--space-5) var(--space-3);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .modal-header h2 {
+    font-size: 1.05rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+  }
+
+  .modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-5) var(--space-4);
+  }
+
+  .modal-body label {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    color: var(--fg-muted);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .modal-body input {
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    border-radius: var(--radius-sm);
+    padding: 0.45rem 0.6rem;
+  }
+
+  .modal-hint {
+    color: var(--fg-faint);
+    font-size: 12px;
+  }
+
+  .modal-error {
+    color: var(--danger);
+    font-weight: 500;
+  }
+
+  .modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+
+  .modal-footer button {
+    border: 1px solid var(--border-strong);
+    background: var(--bg-hover);
+    border-radius: var(--radius-sm);
+    padding: 0.45rem 0.75rem;
+  }
+
+  .modal-footer .primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-fg);
+    font-weight: 600;
   }
 </style>

@@ -30,6 +30,7 @@ where
 pub struct AppDirs {
     pub config_dir: PathBuf,
     pub cache_dir: PathBuf,
+    pub data_dir: PathBuf,
 }
 
 impl AppDirs {
@@ -38,6 +39,7 @@ impl AppDirs {
         let this = Self {
             config_dir: base.config_dir().join(APP_NAME),
             cache_dir: base.cache_dir().join(APP_NAME),
+            data_dir: base.data_dir().join(APP_NAME),
         };
         fs::create_dir_all(&this.config_dir)?;
         fs::create_dir_all(&this.cache_dir)?;
@@ -63,6 +65,10 @@ impl AppDirs {
     pub fn jq_history_file(&self) -> PathBuf {
         self.cache_dir.join("history.jq")
     }
+
+    pub fn recordings_dir(&self) -> PathBuf {
+        self.data_dir.join("recordings")
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -71,6 +77,28 @@ pub struct AppConfig {
     pub ui: UiConfig,
     #[serde(default)]
     pub keys: KeyConfig,
+    #[serde(default, skip_serializing_if = "RecordConfig::is_unset")]
+    pub record: RecordConfig,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RecordConfig {
+    /// Empty / omitted uses `{data_dir}/recordings/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
+}
+
+impl RecordConfig {
+    fn is_unset(&self) -> bool {
+        self.directory_override().is_none()
+    }
+
+    pub fn directory_override(&self) -> Option<&str> {
+        self.directory
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -163,6 +191,13 @@ impl AppConfig {
         }
         fs::write(path, toml::to_string_pretty(self)?)?;
         Ok(())
+    }
+
+    pub fn recordings_dir(&self) -> Result<PathBuf> {
+        match self.record.directory_override() {
+            Some(path) => Ok(PathBuf::from(path)),
+            None => Ok(AppDirs::new()?.recordings_dir()),
+        }
     }
 }
 
@@ -266,6 +301,7 @@ fn from_legacy_str(content: &str) -> std::result::Result<AppConfig, toml::de::Er
             search: legacy.keys.search,
             ignore: legacy.keys.ignore,
         },
+        record: RecordConfig::default(),
     })
 }
 
@@ -352,6 +388,42 @@ mod tests {
         assert_eq!(parsed.ui.stale_after, Duration::from_secs(5));
         assert_eq!(parsed.keys.search, 'f');
         assert_eq!(parsed.keys.ignore, '?');
+        assert_eq!(parsed.record, RecordConfig::default());
+    }
+
+    #[test]
+    fn omitted_record_directory_is_default() {
+        let parsed: AppConfig = toml::from_str(
+            r#"
+            [ui]
+            theme = "dark"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(parsed.record, RecordConfig::default());
+        assert!(parsed.record.directory_override().is_none());
+    }
+
+    #[test]
+    fn empty_record_directory_means_default() {
+        let parsed: AppConfig = toml::from_str(
+            r#"
+            [record]
+            directory = ""
+            "#,
+        )
+        .unwrap();
+        assert!(parsed.record.directory_override().is_none());
+    }
+
+    #[test]
+    fn recordings_dir_is_under_data_dir() {
+        let dirs = AppDirs {
+            config_dir: PathBuf::from("/c"),
+            cache_dir: PathBuf::from("/k"),
+            data_dir: PathBuf::from("/d"),
+        };
+        assert_eq!(dirs.recordings_dir(), PathBuf::from("/d/recordings"));
     }
 
     #[test]

@@ -10,7 +10,10 @@ import type {
   SaveProfileInput,
   SearchHit,
   SearchMode,
+  RecordStatus,
+  RecordingFile,
   SessionStatus,
+  StoppedRecording,
   TreeNodeDto,
   UiSettings,
 } from "./types";
@@ -94,4 +97,36 @@ export function setTheme(theme: Theme): Promise<UiSettings> {
 
 export function setRamLimit(bytes: number): Promise<UiSettings> {
   return invoke<UiSettings>("setRamLimit", { bytes });
+}
+
+export function setRecordDirectory(directory: string): Promise<UiSettings> {
+  return invoke<UiSettings>("setRecordDirectory", { directory });
+}
+
+export function pickFolder(): Promise<{ path: string }> {
+  return invoke<{ path: string }>("pickFolder");
+}
+
+export function startRecording(): Promise<RecordStatus> {
+  return invoke<RecordStatus>("startRecording");
+}
+
+export function stopRecording(): Promise<StoppedRecording> {
+  return invoke<StoppedRecording>("stopRecording");
+}
+
+export function saveRecording(tempPath: string, name: string): Promise<{ path: string }> {
+  return invoke<{ path: string }>("saveRecording", { tempPath, name });
+}
+
+export function discardRecording(tempPath: string): Promise<"ok"> {
+  return invoke<"ok">("discardRecording", { tempPath });
+}
+
+export function listRecordings(): Promise<RecordingFile[]> {
+  return invoke<RecordingFile[]>("listRecordings");
+}
+
+export function exitApp(): Promise<void> {
+  return invoke<void>("exitApp");
 }

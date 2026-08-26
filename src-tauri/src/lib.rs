@@ -5,7 +5,7 @@ mod updater;
 use std::sync::{Mutex, atomic::AtomicU64};
 
 use mqx_core::{AppConfig, JqHistory, LiveHandle, ProfileStore};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 use crate::menu::ThemeMenu;
@@ -18,6 +18,7 @@ pub struct AppState {
     config: Mutex<AppConfig>,
     jq: Mutex<JqHistory>,
     theme_menu: ThemeMenu<tauri::Wry>,
+    pending_recording: Mutex<Option<commands::PendingRecording>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -56,6 +57,7 @@ pub fn run() {
                 config: Mutex::new(config),
                 jq: Mutex::new(jq),
                 theme_menu,
+                pending_recording: Mutex::new(None),
             });
             Ok(())
         })
@@ -79,7 +81,26 @@ pub fn run() {
             commands::get_settings,
             commands::set_theme,
             commands::set_ram_limit,
+            commands::start_recording,
+            commands::stop_recording,
+            commands::save_recording,
+            commands::discard_recording,
+            commands::list_recordings,
+            commands::pick_folder,
+            commands::set_record_directory,
+            commands::exit_app,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let Some(state) = window.try_state::<AppState>() else {
+                    return;
+                };
+                if commands::should_defer_exit(&state) {
+                    api.prevent_close();
+                    let _ = window.emit("app/close-requested", ());
+                }
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

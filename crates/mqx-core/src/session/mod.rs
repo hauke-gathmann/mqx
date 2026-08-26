@@ -15,8 +15,10 @@ pub use tls::broker_display;
 
 use crate::{
     config::UiConfig,
-    message::{Format, Freshness, Message},
+    error::{Error, Result},
+    message::{Format, Freshness, Inbound, Message},
     profiles::{ConnectionProfile, Subscription},
+    record::{RecordStatus, Recorder, StoppedRecording},
     tree::{SearchMode, TopicTree, UpsertOutcome},
 };
 
@@ -77,6 +79,17 @@ pub struct Session {
     /// Orthogonal to Connecting/Reconnecting; ConnAck maps it to Connected vs Detached.
     pub ingest_enabled: bool,
     status_rev: u64,
+    profile_name: String,
+    recorder: Option<Recorder>,
+    stopped_recording: Option<StoppedRecording>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecordingContext {
+    pub epoch: u64,
+    pub profile_id: String,
+    pub profile_name: String,
+    pub broker: String,
 }
 
 pub struct ApplyResult {
@@ -125,6 +138,9 @@ impl Session {
             stale_after: ui.stale_after,
             ingest_enabled: true,
             status_rev: 0,
+            profile_name: profile.name.clone(),
+            recorder: None,
+            stopped_recording: None,
         }
     }
 
@@ -146,6 +162,61 @@ impl Session {
 
     pub fn broker(&self) -> &str {
         &self.broker
+    }
+
+    pub fn profile_name(&self) -> &str {
+        &self.profile_name
+    }
+
+    pub fn recording_context(&self) -> RecordingContext {
+        RecordingContext {
+            epoch: self.epoch,
+            profile_id: self.id.clone(),
+            profile_name: self.profile_name.clone(),
+            broker: self.broker.clone(),
+        }
+    }
+
+    pub fn recorder(&self) -> Option<&Recorder> {
+        self.recorder.as_ref()
+    }
+
+    pub fn try_record(&self, inbound: &Inbound) {
+        if let Some(recorder) = &self.recorder {
+            recorder.try_append(inbound);
+        }
+    }
+
+    pub fn record_status(&self) -> Option<RecordStatus> {
+        self.recorder
+            .as_ref()
+            .map(|recorder| recorder.status(self.epoch))
+    }
+
+    pub fn start_recording(
+        &mut self,
+        directory: impl AsRef<std::path::Path>,
+    ) -> Result<RecordStatus> {
+        if self.recorder.is_some() {
+            return Err(Error::Recording("already recording".into()));
+        }
+        self.stopped_recording = None;
+        let recorder = Recorder::start(directory)?;
+        let status = recorder.status(self.epoch);
+        self.recorder = Some(recorder);
+        Ok(status)
+    }
+
+    pub fn take_recorder(&mut self) -> Option<Recorder> {
+        self.recorder.take()
+    }
+
+    pub fn take_stopped_recording(&mut self) -> Option<StoppedRecording> {
+        self.stopped_recording.take()
+    }
+
+    pub fn set_stopped_recording(&mut self, stopped: StoppedRecording) {
+        self.stopped_recording = Some(stopped);
     }
 
     pub fn select_topic(&mut self, topic: Option<String>) {
@@ -710,6 +781,32 @@ mod tests {
         ));
         session.set_ingest(true);
         assert!(matches!(session.status, Status::Connected));
+    }
+
+    #[test]
+    fn detached_still_records_inbound() {
+        let mut session = session();
+        session.set_status(Status::Connected);
+        session.set_ingest(false);
+        let dir = tempfile::tempdir().unwrap();
+        session.start_recording(dir.path()).unwrap();
+        session.try_record(&Inbound {
+            topic: "home/lamp".into(),
+            payload: Bytes::from_static(b"on"),
+            retain: false,
+            qos: QoS::AtMostOnce,
+            dup: false,
+            timestamp: SystemTime::now(),
+        });
+        session.ingest(msg("home/kitchen", b"1", false));
+        assert_eq!(session.stats(0.0).topics, 0);
+
+        let recorder = session.take_recorder().expect("recorder");
+        let stopped = recorder.stop().unwrap();
+        assert_eq!(stopped.messages, 1);
+        let (_, events) = crate::load_recording(&stopped.temp_path).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].topic, "home/lamp");
     }
 
     #[test]

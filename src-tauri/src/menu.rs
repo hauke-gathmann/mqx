@@ -59,12 +59,17 @@ pub fn build<R: Runtime>(
         .build(app)?;
     let detach = MenuItemBuilder::with_id("detach", "Detach").build(app)?;
     let go_live = MenuItemBuilder::with_id("go-live", "Go Live").build(app)?;
+    let toggle_recording = MenuItemBuilder::with_id("toggle-recording", "Start/Stop Recording")
+        .accelerator("CmdOrCtrl+Shift+R")
+        .build(app)?;
     let disconnect = MenuItemBuilder::with_id("disconnect", "Disconnect").build(app)?;
     let connections = SubmenuBuilder::new(app, "Connections")
         .item(&new_connection)
         .separator()
         .item(&detach)
         .item(&go_live)
+        .separator()
+        .item(&toggle_recording)
         .separator()
         .item(&disconnect)
         .build()?;
@@ -136,6 +141,9 @@ pub fn on_event(app: &AppHandle, id: &str) {
         }
         "go-live" => {
             let _ = app.emit("menu/set-ingest", true);
+        }
+        "toggle-recording" => {
+            let _ = app.emit("menu/toggle-recording", ());
         }
         "search" => {
             let _ = app.emit("menu/search", ());

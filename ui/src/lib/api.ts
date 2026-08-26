@@ -10,6 +10,7 @@ import type {
   SaveProfileInput,
   SearchHit,
   SearchMode,
+  SessionStatus,
   TreeNodeDto,
   UiSettings,
 } from "./types";
@@ -41,6 +42,10 @@ export function connect(id: string): Promise<{ status: "connecting"; epoch: numb
 
 export function disconnect(): Promise<{ status: "disconnected"; epoch: number }> {
   return invoke<{ status: "disconnected"; epoch: number }>("disconnect");
+}
+
+export function setIngest(enabled: boolean): Promise<SessionStatus> {
+  return invoke<SessionStatus>("setIngest", { enabled });
 }
 
 export function treeChildren(path: string[]): Promise<TreeNodeDto[]> {

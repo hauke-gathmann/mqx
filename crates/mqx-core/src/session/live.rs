@@ -189,7 +189,7 @@ async fn run_live(
                         backoff = BACKOFF_START;
                         let subs = {
                             let mut guard = lock(&session);
-                            guard.set_status(Status::Connected);
+                            guard.on_connack();
                             guard.subscriptions().to_vec()
                         };
                         pending_subs = subs.into();
@@ -203,12 +203,15 @@ async fn run_live(
                             qos: qos_from_rumqttc(publish.qos),
                             timestamp: SystemTime::now(),
                         };
-                        match raw_tx.try_send(inbound) {
-                            Ok(()) => {}
-                            Err(TrySendError::Full(_)) => {
-                                debug!("dropping inbound; decode queue full");
+                        let ingest = lock(&session).ingest_enabled;
+                        if ingest {
+                            match raw_tx.try_send(inbound) {
+                                Ok(()) => {}
+                                Err(TrySendError::Full(_)) => {
+                                    debug!("dropping inbound; decode queue full");
+                                }
+                                Err(TrySendError::Disconnected(_)) => break,
                             }
-                            Err(TrySendError::Disconnected(_)) => break,
                         }
                     }
                     Ok(_) => {}

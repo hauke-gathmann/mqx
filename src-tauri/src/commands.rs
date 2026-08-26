@@ -349,6 +349,27 @@ pub async fn disconnect(app: AppHandle, state: State<'_, AppState>) -> Result<St
     })
 }
 
+fn apply_set_ingest(live: Option<&LiveHandle>, enabled: bool) -> Result<SessionStatus, String> {
+    let handle = live.ok_or_else(|| "no active session".to_string())?;
+    let mut session = handle
+        .session()
+        .map_err(|_| "session lock poisoned".to_string())?;
+    session.set_ingest(enabled);
+    Ok(session.status_event())
+}
+
+#[tauri::command(rename = "setIngest")]
+pub fn set_ingest(
+    app: AppHandle,
+    state: State<AppState>,
+    enabled: bool,
+) -> Result<SessionStatus, String> {
+    let live = locked_live(&state)?;
+    let status = apply_set_ingest(live.as_ref(), enabled)?;
+    let _ = app.emit("session/status", status.clone());
+    Ok(status)
+}
+
 #[tauri::command(rename = "treeChildren")]
 pub fn tree_children(
     state: State<AppState>,
@@ -444,4 +465,17 @@ pub fn apply_jq(
 #[tauri::command(rename = "jqHistory")]
 pub fn jq_history(state: State<AppState>, topic: String) -> Result<Vec<String>, String> {
     Ok(locked_jq(&state)?.list(&topic))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_set_ingest;
+
+    #[test]
+    fn set_ingest_without_session_errors() {
+        let err = apply_set_ingest(None, true).unwrap_err();
+        assert_eq!(err, "no active session");
+        let err = apply_set_ingest(None, false).unwrap_err();
+        assert_eq!(err, "no active session");
+    }
 }

@@ -26,6 +26,7 @@ pub type ProfileId = String;
 pub enum Status {
     Connecting,
     Connected,
+    Detached { since: Instant },
     Reconnecting { since: Instant },
     Disconnected,
     Error { msg: String },
@@ -36,6 +37,7 @@ impl Status {
         match self {
             Self::Connecting => StatusKind::Connecting,
             Self::Connected => StatusKind::Connected,
+            Self::Detached { .. } => StatusKind::Detached,
             Self::Reconnecting { .. } => StatusKind::Reconnecting,
             Self::Disconnected => StatusKind::Disconnected,
             Self::Error { .. } => StatusKind::Error,
@@ -72,6 +74,8 @@ pub struct Session {
     last_rate: f64,
     fresh_until: Duration,
     stale_after: Duration,
+    /// Connected ⇒ true, Detached ⇒ false. ConnAck does not flip this.
+    pub ingest_enabled: bool,
 }
 
 pub struct ApplyResult {
@@ -118,6 +122,7 @@ impl Session {
             last_rate: 0.0,
             fresh_until: ui.fresh_until,
             stale_after: ui.stale_after,
+            ingest_enabled: true,
         }
     }
 
@@ -165,10 +170,40 @@ impl Session {
     pub fn set_status(&mut self, status: Status) {
         if let Status::Error { msg } = &status {
             self.error = Some(msg.clone());
-        } else if matches!(status, Status::Connected | Status::Connecting) {
+        } else if matches!(
+            status,
+            Status::Connected | Status::Connecting | Status::Detached { .. }
+        ) {
             self.error = None;
         }
         self.status = status;
+    }
+
+    /// Freeze or resume topic-tree ingest. Does not disconnect.
+    /// Connecting/reconnecting keep their status; ConnAck applies this flag.
+    pub fn set_ingest(&mut self, enabled: bool) {
+        self.ingest_enabled = enabled;
+        match self.status {
+            Status::Connected if !enabled => {
+                self.set_status(Status::Detached {
+                    since: Instant::now(),
+                });
+            }
+            Status::Detached { .. } if enabled => {
+                self.set_status(Status::Connected);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn on_connack(&mut self) {
+        if self.ingest_enabled {
+            self.set_status(Status::Connected);
+        } else {
+            self.set_status(Status::Detached {
+                since: Instant::now(),
+            });
+        }
     }
 
     pub fn set_io_error(&mut self, message: String) {
@@ -281,6 +316,13 @@ impl Session {
 
     /// Only write path for live (and later playback) ingress.
     pub fn ingest(&mut self, message: Message) -> ApplyResult {
+        if !self.ingest_enabled {
+            return ApplyResult {
+                topic_message: None,
+                upserts: Vec::new(),
+                deletes: Vec::new(),
+            };
+        }
         let topic = message.inbound.topic.clone();
         // WHY: empty retain is a delete; do not stream it as the selected payload.
         let retain_clear = message.inbound.retain && message.inbound.payload.is_empty();
@@ -564,10 +606,81 @@ mod tests {
     fn default_status_and_source() {
         let session = session();
         assert!(matches!(session.status, Status::Connecting));
+        assert!(session.ingest_enabled);
         assert!(matches!(session.source(), Source::Live));
         assert_eq!(session.subscriptions()[0].topic, "home/#");
         assert_eq!(session.broker(), "mqtt://localhost:1883");
         assert_eq!(session.epoch(), 1);
+    }
+
+    #[test]
+    fn detached_publish_does_not_change_topic_count() {
+        let mut session = session();
+        session.set_status(Status::Connected);
+        session.ingest(msg("home/lamp", b"on", false));
+        assert_eq!(session.stats(0.0).topics, 1);
+
+        session.set_ingest(false);
+        assert!(matches!(session.status, Status::Detached { .. }));
+        assert!(!session.ingest_enabled);
+        session.ingest(msg("home/kitchen", b"1", false));
+        session.ingest(msg("home/lamp", b"off", false));
+        assert_eq!(session.stats(0.0).topics, 1);
+        assert_eq!(session.stats(0.0).messages_total, 1);
+    }
+
+    #[test]
+    fn go_live_subsequent_publish_upserts() {
+        let mut session = session();
+        session.set_status(Status::Connected);
+        session.ingest(msg("home/lamp", b"on", false));
+        session.set_ingest(false);
+        session.ingest(msg("home/kitchen", b"1", false));
+        assert_eq!(session.stats(0.0).topics, 1);
+
+        session.set_ingest(true);
+        assert!(matches!(session.status, Status::Connected));
+        assert!(session.ingest_enabled);
+        session.ingest(msg("home/kitchen", b"1", false));
+        assert_eq!(session.stats(0.0).topics, 2);
+    }
+
+    #[test]
+    fn connack_while_detached_stays_detached() {
+        let mut session = session();
+        session.set_status(Status::Connected);
+        session.set_ingest(false);
+        session.set_io_error("connection lost".into());
+        assert!(matches!(session.status, Status::Reconnecting { .. }));
+        assert!(!session.ingest_enabled);
+
+        session.on_connack();
+        assert!(matches!(session.status, Status::Detached { .. }));
+        assert!(!session.ingest_enabled);
+        assert_eq!(session.status.kind(), StatusKind::Detached);
+    }
+
+    #[test]
+    fn connack_while_live_is_connected() {
+        let mut session = session();
+        session.set_io_error("connection lost".into());
+        assert!(session.ingest_enabled);
+        session.on_connack();
+        assert!(matches!(session.status, Status::Connected));
+        assert!(session.ingest_enabled);
+    }
+
+    #[test]
+    fn set_ingest_does_not_disconnect() {
+        let mut session = session();
+        session.set_status(Status::Connected);
+        session.set_ingest(false);
+        assert!(!matches!(
+            session.status,
+            Status::Disconnected | Status::Error { .. }
+        ));
+        session.set_ingest(true);
+        assert!(matches!(session.status, Status::Connected));
     }
 
     #[test]

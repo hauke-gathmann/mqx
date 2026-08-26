@@ -9,6 +9,7 @@
     getSettings,
     listProfiles,
     saveProfile,
+    setIngest,
     setRamLimit,
     setTheme,
   } from "./lib/api";
@@ -31,7 +32,9 @@
     ramLimitGb,
     getLastUsedProfileId,
     idleSessionStatus,
+    sessionOpen as isSessionOpen,
     setLastUsedProfileId,
+    statusLabel,
     type ProfileDraft,
     type ProfileSummary,
     type SessionStats,
@@ -58,12 +61,11 @@
 
   applyTheme(readCachedTheme());
 
-  const live = $derived(
-    sessionStatus.status === "connecting" ||
-      sessionStatus.status === "connected" ||
-      sessionStatus.status === "reconnecting",
-  );
-  const showPicker = $derived(!live && sessionStatus.status !== "error");
+  const sessionOpen = $derived(isSessionOpen(sessionStatus.status));
+  const showHeader = $derived(sessionOpen || sessionStatus.status === "error");
+  const showExplorer = $derived(sessionOpen);
+  const showPicker = $derived(!sessionOpen && sessionStatus.status !== "error");
+  const ingestEnabled = $derived(sessionStatus.status !== "detached");
 
   const lastUsedName = $derived(
     lastUsedId ? (profiles.find((profile) => profile.id === lastUsedId)?.name ?? null) : null,
@@ -268,6 +270,21 @@
     }
   }
 
+  async function applyIngest(enabled: boolean) {
+    if (!isSessionOpen(sessionStatus.status)) {
+      return;
+    }
+    error = null;
+    busy = true;
+    try {
+      sessionStatus = await setIngest(enabled);
+    } catch (err) {
+      error = errorMessage(err);
+    } finally {
+      busy = false;
+    }
+  }
+
   async function save() {
     if (!draft) {
       return;
@@ -357,6 +374,9 @@
         const disconnectUnlisten = await listen("menu/disconnect", () => {
           void disconnect();
         });
+        const ingestUnlisten = await listen<boolean>("menu/set-ingest", (event) => {
+          void applyIngest(event.payload);
+        });
         const settingsErrorUnlisten = await listen<string>("settings/error", (event) => {
           settingsError = event.payload;
           settingsOpen = true;
@@ -368,6 +388,7 @@
           settingsUnlisten();
           newConnectionUnlisten();
           disconnectUnlisten();
+          ingestUnlisten();
           settingsErrorUnlisten();
           return;
         }
@@ -378,6 +399,7 @@
           settingsUnlisten,
           newConnectionUnlisten,
           disconnectUnlisten,
+          ingestUnlisten,
           settingsErrorUnlisten,
         );
       } catch (err) {
@@ -425,12 +447,12 @@
 </script>
 
 <div class="shell">
-  {#if live || sessionStatus.status === "error"}
+  {#if showHeader}
     <header>
       <h1>mqx</h1>
       <div class="session" aria-live="polite">
-        <span class="dot {sessionStatus.status}" title={sessionStatus.status}></span>
-        <span class="status">{sessionStatus.status}</span>
+        <span class="dot {sessionStatus.status}" title={statusLabel(sessionStatus.status)}></span>
+        <span class="status">{statusLabel(sessionStatus.status)}</span>
         {#if sessionStatus.broker}
           <span class="broker">{sessionStatus.broker}</span>
         {/if}
@@ -445,6 +467,11 @@
         {/if}
       </div>
       <div class="actions">
+        {#if sessionOpen}
+          <button type="button" disabled={busy} onclick={() => void applyIngest(!ingestEnabled)}>
+            {ingestEnabled ? "Detach" : "Go live"}
+          </button>
+        {/if}
         <button type="button" class="gear" aria-label="Settings" onclick={openSettings}>⚙</button>
         <button type="button" disabled={busy} onclick={() => void disconnect()}>Disconnect</button>
       </div>
@@ -477,7 +504,7 @@
         onconnect={(id) => void connect(id)}
         onsettings={openSettings}
       />
-    {:else if live}
+    {:else if showExplorer}
       {#key `${wantedProfileId ?? ""}:${wantedEpoch ?? sessionStatus.epoch ?? 0}`}
         <Explorer
           profileId={wantedProfileId}
@@ -567,17 +594,28 @@
     background: var(--ok);
   }
 
-  .dot.connecting,
+  .dot.detached,
+  .dot.connecting {
+    background: var(--warn);
+  }
+
   .dot.reconnecting {
     background: var(--warn);
+    animation: pulse 1.2s ease-in-out infinite;
   }
 
   .dot.error {
     background: var(--danger);
   }
 
-  .status {
-    text-transform: lowercase;
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
   }
 
   .broker,

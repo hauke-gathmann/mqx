@@ -294,9 +294,30 @@ export function duplicateName(name: string): string {
 export type SessionStatusKind =
   | "connecting"
   | "connected"
+  | "detached"
   | "reconnecting"
   | "disconnected"
   | "error";
+
+export function sessionOpen(status: SessionStatusKind): boolean {
+  return (
+    status === "connecting" ||
+    status === "connected" ||
+    status === "reconnecting" ||
+    status === "detached"
+  );
+}
+
+export function statusLabel(status: SessionStatusKind): string {
+  switch (status) {
+    case "connected":
+      return "Live";
+    case "detached":
+      return "Detached";
+    default:
+      return status;
+  }
+}
 
 export type SessionStatus = {
   profileId: string | null;

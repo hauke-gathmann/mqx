@@ -332,7 +332,7 @@
   }
 
   function onBatch(batch: TreeBatch) {
-    if (!sameSession(batch.epoch, batch.profileId)) {
+    if (status === "detached" || !sameSession(batch.epoch, batch.profileId)) {
       return;
     }
     if (loading.size > 0) {
@@ -556,7 +556,7 @@
   }
 
   async function onTopicMessage(payload: MessageDto) {
-    if (!sameSession(payload.epoch)) {
+    if (status === "detached" || !sameSession(payload.epoch)) {
       return;
     }
     if (payload.topic !== selected) {
@@ -728,7 +728,7 @@
 
 </script>
 
-<div class="explorer">
+<div class="explorer" data-status={status}>
   {#if error}
     <p class="banner" role="alert">{error}</p>
   {/if}

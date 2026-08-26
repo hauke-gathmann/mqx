@@ -57,9 +57,15 @@ pub fn build<R: Runtime>(
     let new_connection = MenuItemBuilder::with_id("new-connection", "New Connection")
         .accelerator("CmdOrCtrl+N")
         .build(app)?;
+    let detach = MenuItemBuilder::with_id("detach", "Detach").build(app)?;
+    let go_live = MenuItemBuilder::with_id("go-live", "Go Live").build(app)?;
     let disconnect = MenuItemBuilder::with_id("disconnect", "Disconnect").build(app)?;
     let connections = SubmenuBuilder::new(app, "Connections")
         .item(&new_connection)
+        .separator()
+        .item(&detach)
+        .item(&go_live)
+        .separator()
         .item(&disconnect)
         .build()?;
 
@@ -124,6 +130,12 @@ pub fn on_event(app: &AppHandle, id: &str) {
         }
         "disconnect" => {
             let _ = app.emit("menu/disconnect", ());
+        }
+        "detach" => {
+            let _ = app.emit("menu/set-ingest", false);
+        }
+        "go-live" => {
+            let _ = app.emit("menu/set-ingest", true);
         }
         "search" => {
             let _ = app.emit("menu/search", ());

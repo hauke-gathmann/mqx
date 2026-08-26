@@ -11,6 +11,7 @@ use crate::message::{Format, Freshness, Message};
 pub enum StatusKind {
     Connecting,
     Connected,
+    Detached,
     Reconnecting,
     Disconnected,
     Error,
@@ -272,6 +273,14 @@ mod tests {
         assert!(dto.payload_json.is_some());
         assert!(dto.error.is_none());
         assert!(dto.payload_text.contains('\n'));
+    }
+
+    #[test]
+    fn status_kind_detached_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&StatusKind::Detached).unwrap(),
+            "\"detached\""
+        );
     }
 
     #[test]

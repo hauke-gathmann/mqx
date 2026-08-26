@@ -67,6 +67,7 @@ pub fn run() {
             commands::pick_file,
             commands::connect,
             commands::disconnect,
+            commands::set_ingest,
             commands::tree_children,
             commands::select_topic,
             commands::get_message,

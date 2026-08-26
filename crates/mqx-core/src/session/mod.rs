@@ -215,6 +215,18 @@ impl Session {
         self.stopped_recording.take()
     }
 
+    pub fn stopped_recording(&self) -> Option<&StoppedRecording> {
+        self.stopped_recording.as_ref()
+    }
+
+    pub fn has_unsaved_recording(&self) -> bool {
+        self.recorder.is_some()
+            || self
+                .stopped_recording
+                .as_ref()
+                .is_some_and(|stopped| stopped.temp_path.exists())
+    }
+
     pub fn set_stopped_recording(&mut self, stopped: StoppedRecording) {
         self.stopped_recording = Some(stopped);
     }
@@ -807,6 +819,23 @@ mod tests {
         let (_, events) = crate::load_recording(&stopped.temp_path).unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].topic, "home/lamp");
+    }
+
+    #[test]
+    fn missing_temp_is_not_unsaved() {
+        let mut session = session();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".mqx-gone.jsonl");
+        session.set_stopped_recording(StoppedRecording {
+            temp_path: path,
+            messages: 1,
+            topics: 1,
+            started_ms: 1,
+            ended_ms: 2,
+            dropped: 0,
+            bytes: 0,
+        });
+        assert!(!session.has_unsaved_recording());
     }
 
     #[test]

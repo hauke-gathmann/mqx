@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import type { HistoryItem } from "./types";
 
   let {
@@ -16,19 +17,86 @@
   } = $props();
 
   let listEl = $state<HTMLDivElement | null>(null);
+  let prevTopic: string | null = null;
+  let prevIndex: number | null = null;
+  let prevCount = 0;
 
   const rows = $derived([...items].reverse());
+  const latestIndex = $derived(items.length > 0 ? items[items.length - 1].index : null);
   const followingLatest = $derived(
-    items.length > 0 && selectedIndex != null && selectedIndex === items[items.length - 1]?.index,
+    selectedIndex != null && latestIndex != null && selectedIndex === latestIndex,
   );
 
   $effect(() => {
-    void selectedIndex;
-    void items.length;
-    listEl
-      ?.querySelector<HTMLElement>(".row.current")
-      ?.scrollIntoView({ block: "nearest" });
+    const currentTopic = topic;
+    const index = selectedIndex;
+    const count = items.length;
+    const following =
+      index != null && items.length > 0 && index === items[items.length - 1]?.index;
+    const el = listEl;
+
+    if (currentTopic !== prevTopic) {
+      prevTopic = currentTopic;
+      prevIndex = null;
+      prevCount = 0;
+    }
+
+    const grew = count > prevCount;
+    const added = count - prevCount;
+    const indexChanged = index !== prevIndex;
+    prevIndex = index;
+    prevCount = count;
+
+    if (!el) {
+      return;
+    }
+
+    if (following) {
+      void tick().then(() => {
+        if (listEl) {
+          listEl.scrollTop = 0;
+        }
+      });
+      return;
+    }
+
+    if (grew && added > 0) {
+      void tick().then(() => {
+        const node = listEl;
+        if (!node) {
+          return;
+        }
+        const nextRows = node.querySelectorAll(".row");
+        let delta = 0;
+        for (let i = 0; i < added && i < nextRows.length; i += 1) {
+          delta += (nextRows[i] as HTMLElement).offsetHeight;
+        }
+        node.scrollTop += delta;
+      });
+      return;
+    }
+
+    if (indexChanged) {
+      void tick().then(() => {
+        listEl
+          ?.querySelector<HTMLElement>(".row.current")
+          ?.scrollIntoView({ block: "nearest" });
+      });
+    }
   });
+
+  function jumpToLatest() {
+    if (latestIndex == null) {
+      return;
+    }
+    if (selectedIndex === latestIndex) {
+      if (listEl) {
+        listEl.scrollTop = 0;
+      }
+      return;
+    }
+    onselectindex(latestIndex);
+  }
 
   function formatArrival(ms: number): string {
     const date = new Date(ms);
@@ -64,6 +132,16 @@
     {#if topic}
       <h2 title={topic}>{topic}</h2>
       <span class="count">{items.length} {items.length === 1 ? "message" : "messages"}</span>
+      {#if items.length > 0}
+        <button
+          type="button"
+          class="jump"
+          class:live={followingLatest}
+          onclick={jumpToLatest}
+        >
+          {followingLatest ? "Following latest" : "Jump to latest"}
+        </button>
+      {/if}
     {:else}
       <h2 class="muted">Messages</h2>
     {/if}
@@ -147,6 +225,22 @@
     flex-shrink: 0;
   }
 
+  .jump {
+    flex-shrink: 0;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-hover);
+    border-radius: var(--radius-sm);
+    padding: 0.2rem 0.5rem;
+    font-size: 11px;
+    color: var(--fg-muted);
+    white-space: nowrap;
+  }
+
+  .jump.live {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  }
+
   .empty {
     margin: 0;
     padding: var(--space-5);
@@ -157,6 +251,7 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
+    overflow-anchor: none;
   }
 
   .row {

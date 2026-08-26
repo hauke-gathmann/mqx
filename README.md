@@ -18,12 +18,24 @@ Layout:
 - `ui/` — Vite + Svelte 5 frontend
 - `src-tauri/` — Tauri 2 shell and IPC (`mqx` package)
 - `crates/mqx-core/` — UI-agnostic profiles, tree, and decode
+- `tools/mqtt-trace/` — record/replay MQTT traffic for testing
 
 ```bash
 npm run check
 cargo test -p mqx-core
 cargo check -p mqx
 ```
+
+### MQTT traces
+
+`mqtt-trace` records every publish on a broker to a JSONL file, then replays it with the original inter-arrival times:
+
+```bash
+cargo run -p mqtt-trace -- record --broker mqtt://127.0.0.1:1883 -o traffic.jsonl
+cargo run -p mqtt-trace -- replay traffic.jsonl --broker mqtt://127.0.0.1:1883
+```
+
+Subscribe defaults to `#`. Add `--sys` to include `$SYS/#`. Replay `--speed 1` is real time; `--speed 0` is as fast as possible; `--loop` repeats the trace.
 
 Profiles are stored under the `mqx` application directory. Theme is stored in `config.toml` (`[ui] theme = "dark" | "light" | "system"`).
 

@@ -35,6 +35,12 @@ jobs:
       - name: test (mqx-core)
         run: cargo test -p mqx-core
 
+      - name: clippy (mqtt-trace)
+        run: cargo clippy -p mqtt-trace --all-targets -- -D warnings
+
+      - name: test (mqtt-trace)
+        run: cargo test -p mqtt-trace
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:

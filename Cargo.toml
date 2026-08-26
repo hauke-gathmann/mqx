@@ -1,4 +1,4 @@
 [workspace]
-members = ["crates/mqx-core", "src-tauri"]
+members = ["crates/mqx-core", "src-tauri", "tools/mqtt-trace"]
 default-members = ["crates/mqx-core"]
 resolver = "2"

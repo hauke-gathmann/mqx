@@ -286,7 +286,7 @@
     mutate((model) => applyBatch(model, batch.upserts, batch.deletes));
     if ((gone || cleared) && selected) {
       void clearSelection();
-    } else if (selectedUpserted) {
+    } else if (selectedUpserted && historyIndex != null) {
       void refreshSelectedHistory();
     }
   }
@@ -497,7 +497,7 @@
   }
 
   async function refreshSelectedHistory() {
-    if (!selected) {
+    if (!selected || historyIndex == null) {
       return;
     }
     const topic = selected;

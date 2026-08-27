@@ -33,6 +33,8 @@ pub struct PlaybackProgress {
     pub state: PlaybackState,
     #[serde(default)]
     pub epoch: u64,
+    #[serde(default)]
+    pub generation: u64,
 }
 
 pub struct ReplayJob {
@@ -40,6 +42,7 @@ pub struct ReplayJob {
     pub events: Vec<RecordEvent>,
     pub file: String,
     pub epoch: u64,
+    pub generation: u64,
     pub events_tx: mpsc::UnboundedSender<SessionEvent>,
 }
 
@@ -59,6 +62,7 @@ pub async fn run_replay(job: ReplayJob) {
         events,
         file,
         epoch,
+        generation,
         events_tx,
     } = job;
     if events.is_empty() {
@@ -77,6 +81,7 @@ pub async fn run_replay(job: ReplayJob) {
         t_ms: t0,
         t_end_ms,
         epoch,
+        generation,
         tx: events_tx.clone(),
         done: false,
     };
@@ -89,6 +94,7 @@ pub async fn run_replay(job: ReplayJob) {
         t_end_ms,
         PlaybackState::Playing,
         epoch,
+        generation,
     );
 
     let start = Instant::now();
@@ -129,6 +135,7 @@ pub async fn run_replay(job: ReplayJob) {
                 t_end_ms,
                 PlaybackState::Playing,
                 epoch,
+                generation,
             );
             last_progress = Instant::now();
             since_progress = 0;
@@ -146,6 +153,7 @@ pub async fn run_replay(job: ReplayJob) {
             t_end_ms,
             PlaybackState::Ended,
             epoch,
+            generation,
         );
         guard.done = true;
     } else {
@@ -160,6 +168,7 @@ struct StopOnDrop {
     t_ms: u64,
     t_end_ms: u64,
     epoch: u64,
+    generation: u64,
     tx: mpsc::UnboundedSender<SessionEvent>,
     done: bool,
 }
@@ -178,6 +187,7 @@ impl Drop for StopOnDrop {
             self.t_end_ms,
             PlaybackState::Stopped,
             self.epoch,
+            self.generation,
         );
     }
 }
@@ -192,6 +202,7 @@ fn emit(
     t_end_ms: u64,
     state: PlaybackState,
     epoch: u64,
+    generation: u64,
 ) {
     let _ = tx.send(SessionEvent::Playback(PlaybackProgress {
         file: file.to_string(),
@@ -201,6 +212,7 @@ fn emit(
         t_end_ms,
         state,
         epoch,
+        generation,
     }));
 }
 
@@ -297,6 +309,7 @@ mod tests {
             events: vec![event(1, "t")],
             file: "lamp.jsonl".into(),
             epoch: handle.epoch(),
+            generation: 1,
             events_tx: tx,
         })
         .await;
@@ -327,6 +340,7 @@ mod tests {
             events: vec![event(0, "a"), event(10_000, "b")],
             file: "lamp.jsonl".into(),
             epoch: 7,
+            generation: 3,
             events_tx: tx,
         }));
 

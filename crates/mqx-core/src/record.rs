@@ -213,7 +213,7 @@ pub fn list_recordings(dir: &Path, cache: &mut RecordingScanCache) -> Result<Vec
             continue;
         }
         let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+        if !is_listed_recording(&path) {
             continue;
         }
         let meta = match entry.metadata() {
@@ -693,6 +693,28 @@ pub fn validate_recording_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn with_jsonl_extension(name: &str) -> String {
+    let name = name.trim();
+    if name.to_ascii_lowercase().ends_with(".jsonl") {
+        name.to_string()
+    } else {
+        format!("{name}.jsonl")
+    }
+}
+
+fn is_listed_recording(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if name.starts_with('.') {
+        return false;
+    }
+    match path.extension().and_then(|ext| ext.to_str()) {
+        None => true,
+        Some(ext) => ext.eq_ignore_ascii_case("jsonl"),
+    }
+}
+
 pub fn save_recording(
     temp_path: &Path,
     directory: &Path,
@@ -704,7 +726,7 @@ pub fn save_recording(
         return Err(Error::Recording("not a temporary recording".into()));
     }
     fs::create_dir_all(directory)?;
-    let dest = directory.join(name);
+    let dest = directory.join(with_jsonl_extension(name));
     if dest.parent() != Some(directory) {
         return Err(Error::Recording(
             "recording name must be a file name, not a path".into(),
@@ -739,13 +761,7 @@ pub fn list_recording_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files: Vec<PathBuf> = fs::read_dir(dir)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    !name.starts_with('.') && name.ends_with(".jsonl") && path.is_file()
-                })
-        })
+        .filter(|path| is_listed_recording(path) && path.is_file())
         .collect();
     files.sort();
     Ok(files)
@@ -1115,6 +1131,7 @@ mod tests {
         .unwrap();
         let dest = save_recording(&temp, dir.path(), "lamp.jsonl", &sample_header()).unwrap();
         assert!(!temp.exists());
+        assert_eq!(dest.extension().and_then(|ext| ext.to_str()), Some("jsonl"));
         let (header, events) = load_recording(&dest).unwrap();
         assert_eq!(header.expect("header").kind, RECORDING_KIND);
         assert_eq!(events.len(), 1);
@@ -1229,6 +1246,38 @@ mod tests {
         assert_eq!(info.topics, 1);
         assert_eq!(info.first_t_ms, Some(1_787_735_165_782));
         assert!(info.started_at.is_none());
+    }
+
+    #[test]
+    fn save_recording_appends_jsonl_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let temp = dir.path().join(".mqx-5.jsonl");
+        std::fs::write(
+            &temp,
+            b"{\"t_ms\":1,\"topic\":\"t\",\"qos\":0,\"retain\":false,\"payload\":\"\"}\n",
+        )
+        .unwrap();
+        let dest = save_recording(&temp, dir.path(), "lamp", &sample_header()).unwrap();
+        assert_eq!(dest.file_name().unwrap(), "lamp.jsonl");
+        let mut cache = RecordingScanCache::default();
+        let list = list_recordings(dir.path(), &mut cache).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "lamp");
+    }
+
+    #[test]
+    fn list_recordings_includes_extensionless_jsonl() {
+        let dir = tempfile::tempdir().unwrap();
+        write_jsonl(
+            dir.path(),
+            "capture",
+            "{\"t_ms\":1,\"topic\":\"a\",\"qos\":0,\"retain\":false,\"payload\":\"YQ==\"}\n",
+        );
+        let mut cache = RecordingScanCache::default();
+        let list = list_recordings(dir.path(), &mut cache).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "capture");
+        assert_eq!(list[0].messages, 1);
     }
 
     #[test]

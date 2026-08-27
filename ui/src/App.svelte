@@ -490,11 +490,12 @@
     if (!prompt) {
       return;
     }
-    const name = prompt.name.trim();
-    if (!name || name.includes("/") || name.includes("\\") || name.includes("..")) {
+    const trimmed = prompt.name.trim();
+    if (!trimmed || trimmed.includes("/") || trimmed.includes("\\") || trimmed.includes("..")) {
       savePrompt = { ...prompt, error: "Name must be a file name, not a path." };
       return;
     }
+    const name = trimmed.toLowerCase().endsWith(".jsonl") ? trimmed : `${trimmed}.jsonl`;
     busy = true;
     try {
       await saveRecording(prompt.tempPath, name);
@@ -999,6 +1000,7 @@
           <label>
             Filename
             <input bind:this={saveNameInput} bind:value={savePrompt.name} spellcheck="false" />
+            <span class="modal-hint">Saved as a .jsonl file.</span>
           </label>
           <p class="modal-hint">Cancel discards the capture.</p>
           {#if savePrompt.error}

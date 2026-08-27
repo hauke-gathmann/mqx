@@ -25,7 +25,7 @@ pub use record::{
     Recorder, RecordingHeader, RecordingInfo, RecordingLine, RecordingScanCache, StoppedRecording,
     check_recording_size, discard_recording, inspect_recording, list_recording_files,
     list_recordings, load_recording, load_recording_from, load_replay_events, save_recording,
-    sniff_line, unix_ms_to_rfc3339, validate_recording_name, wait_duration,
+    sniff_line, unix_ms_to_rfc3339, validate_recording_name, wait_duration, with_jsonl_extension,
 };
 pub use session::{
     ApplyResult, HistoryItemDto, HistoryMeta, JqApplyResult, JqErrorDto, LiveHandle, MessageDto,

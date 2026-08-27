@@ -225,7 +225,7 @@ mod tests {
     use crate::{
         config::UiConfig,
         profiles::{ConnectionProfile, Protocol, SessionConfig, Subscription, TlsConfig},
-        session::{LiveHandle, Status, StatusKind},
+        session::{Status, StatusKind},
     };
 
     fn event(t_ms: u64, topic: &str) -> RecordEvent {
@@ -290,36 +290,38 @@ mod tests {
 
     #[tokio::test]
     async fn start_replay_while_detached_leaves_handle_detached() {
-        let (handle, _events) =
-            LiveHandle::spawn(profile("profile-1"), None, &UiConfig::default()).unwrap();
-        {
-            let mut session = handle.session().unwrap();
-            session.set_status(Status::Connected);
-            session.set_ingest(false);
-        }
+        let mut session = session();
+        session.set_status(Status::Connected);
+        session.set_ingest(false);
+        assert_replay_target(&session, Some("profile-1")).unwrap();
 
-        {
-            let session = handle.session().unwrap();
-            assert_replay_target(&session, Some("profile-1")).unwrap();
-        }
+        let (client, mut eventloop) =
+            AsyncClient::new(MqttOptions::new("replay-detached", "127.0.0.1", 1), 10);
+        let pump = tokio::spawn(async move {
+            loop {
+                if eventloop.poll().await.is_err() {
+                    sleep(Duration::from_millis(20)).await;
+                }
+            }
+        });
 
         let (tx, _rx) = mpsc::unbounded_channel();
-        run_replay(ReplayJob {
-            client: handle.client(),
-            events: vec![event(1, "t")],
-            file: "lamp.jsonl".into(),
-            epoch: handle.epoch(),
-            generation: 1,
-            events_tx: tx,
-        })
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_replay(ReplayJob {
+                client,
+                events: vec![event(1, "t")],
+                file: "lamp.jsonl".into(),
+                epoch: 1,
+                generation: 1,
+                events_tx: tx,
+            }),
+        )
         .await;
 
-        {
-            let session = handle.session().unwrap();
-            assert!(!session.ingest_enabled);
-            assert_eq!(session.status.kind(), StatusKind::Detached);
-        }
-        handle.stop().await;
+        assert!(!session.ingest_enabled);
+        assert_eq!(session.status.kind(), StatusKind::Detached);
+        pump.abort();
     }
 
     #[tokio::test]

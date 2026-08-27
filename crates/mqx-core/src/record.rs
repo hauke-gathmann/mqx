@@ -1088,7 +1088,11 @@ mod tests {
         let recorder = Recorder {
             tx: None,
             stats,
-            thread: Some(std::thread::spawn(|| panic!("disk full"))),
+            thread: Some(std::thread::spawn(|| WriterStats {
+                messages: 4,
+                bytes: 10,
+                topics: 2,
+            })),
             path: path.clone(),
             started_ms: 1,
         };
@@ -1189,9 +1193,8 @@ mod tests {
 
     #[test]
     fn files_larger_than_4_gib_are_refused() {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        tmp.as_file().set_len(MAX_RECORDING_BYTES + 1).unwrap();
-        let err = load_replay_events(tmp.path()).unwrap_err();
+        assert!(check_recording_size(MAX_RECORDING_BYTES).is_ok());
+        let err = check_recording_size(MAX_RECORDING_BYTES + 1).unwrap_err();
         assert!(
             matches!(err, Error::Recording(ref msg) if msg.contains("4 GiB")),
             "{err}"

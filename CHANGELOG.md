@@ -3,7 +3,7 @@
 ## 0.2.0
 
 * RAM slider (4–128 GB, default 12 GB) with oldest-extra eviction; each topic keeps its latest message
-* Live / Detached: freeze the topic tree without disconnecting the broker
+* Live / Detached: freeze the topic tree view without disconnecting the broker
 * Go live applies traffic received while Detached (under the RAM cap)
 * Check for Updates in Settings
 * Record live traffic to mqtt-trace-compatible JSONL

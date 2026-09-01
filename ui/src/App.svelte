@@ -46,6 +46,7 @@
     idleSessionStatus,
     isStaleSessionStatus,
     playbackSpanMs,
+    recordingLabel,
     sessionOpen as isSessionOpen,
     setLastUsedProfileId,
     statusLabel,
@@ -838,7 +839,7 @@
         {/if}
         {#if replaying && tab === "explorer" && playback}
           <button type="button" class="replay-label" onclick={() => selectTab("playback")}>
-            Replaying {playback.file}
+            Replaying {recordingLabel(playback.file)}
             <span class="replay-time">
               {formatClock(replaySpan.elapsed)} / {formatClock(replaySpan.duration)}
             </span>
@@ -1001,9 +1002,8 @@
           }}
         >
           <label>
-            Filename
+            Name
             <input bind:this={saveNameInput} bind:value={savePrompt.name} spellcheck="false" />
-            <span class="modal-hint">Saved as a .jsonl file.</span>
           </label>
           <p class="modal-hint">Cancel discards the capture.</p>
           {#if savePrompt.error}

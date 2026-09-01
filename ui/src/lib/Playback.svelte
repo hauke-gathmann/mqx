@@ -6,6 +6,7 @@
     errorMessage,
     formatClock,
     formatRecordingTime,
+    recordingLabel,
     playbackSpanMs,
     type PlaybackProgress,
     type ProfileSummary,
@@ -124,7 +125,7 @@
     <p class="muted">Loading…</p>
   {:else if recordings.length === 0}
     <p class="empty">
-      No recordings yet. Connect and hit Record, or copy a mqtt-trace JSONL into
+      No recordings yet. Connect and hit Record, or copy a mqtt-trace capture into
       <span class="dir">{directory || "the recordings folder"}</span>.
     </p>
   {:else}
@@ -142,7 +143,7 @@
             aria-selected={active}
             onclick={() => (selectedPath = recording.path)}
           >
-            <span class="name">{recording.name}</span>
+            <span class="name">{recordingLabel(recording.name)}</span>
             <span class="time">{formatRecordingTime(recording)}</span>
             <span class="meta">{recording.messages} messages · {recording.topics} topics</span>
           </button>

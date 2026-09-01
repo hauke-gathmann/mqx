@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { pickFolder } from "./api";
+  import { getVersion } from "@tauri-apps/api/app";
+  import { checkForUpdates, pickFolder } from "./api";
   import { errorMessage } from "./types";
   import { THEMES, type Theme } from "./theme";
   import { RAM_LIMIT_MAX_GB, RAM_LIMIT_MIN_GB, ramLimitGb } from "./types";
@@ -33,6 +34,8 @@
   let dialog = $state<HTMLDivElement | null>(null);
   let directory = $state("");
   let pickError = $state<string | null>(null);
+  let version = $state("");
+  let checking = $state(false);
 
   $effect(() => {
     directory = recordDirectory;
@@ -59,7 +62,29 @@
     ramGb = Math.min(RAM_LIMIT_MAX_GB, Math.max(RAM_LIMIT_MIN_GB, ramLimitGb(ramLimitBytes)));
   });
 
+  async function checkUpdates() {
+    if (checking) {
+      return;
+    }
+    pickError = null;
+    checking = true;
+    try {
+      await checkForUpdates();
+    } catch (err) {
+      pickError = errorMessage(err);
+    } finally {
+      checking = false;
+    }
+  }
+
   onMount(() => {
+    void getVersion()
+      .then((value) => {
+        version = value;
+      })
+      .catch((err) => {
+        pickError = errorMessage(err);
+      });
     const first = dialog?.querySelector<HTMLElement>("button, input");
     first?.focus();
     function onKey(event: KeyboardEvent) {
@@ -140,6 +165,18 @@
         </span>
         <span class="hint">Empty uses the default. Captures include raw payloads.</span>
       </label>
+      <fieldset class="updates">
+        <legend>Updates</legend>
+        {#if version}
+          <p class="version">Version {version}</p>
+        {/if}
+        <button type="button" disabled={busy || checking} onclick={() => void checkUpdates()}>
+          Check for Updates…
+        </button>
+        <p class="hint">
+          Unsigned builds or a missing latest.json fail with the existing dialog.
+        </p>
+      </fieldset>
     </div>
     {#if pickError || error}
       <p class="error" role="alert">{pickError ?? error}</p>
@@ -192,13 +229,32 @@
   }
 
   .themes,
-  .ram {
+  .ram,
+  .updates {
     border: 0;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
+  }
+
+  .version {
+    margin: 0;
+    color: var(--fg);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .updates button {
+    align-self: flex-start;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-hover);
+    border-radius: var(--radius-sm);
+    padding: 0.4rem 0.7rem;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg);
   }
 
   .slider-row {

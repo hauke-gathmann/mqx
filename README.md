@@ -20,7 +20,7 @@ Download the installer from the [latest GitHub Release](https://github.com/hauke
 
 The first builds are unsigned. macOS: right-click the app → Open. Windows: SmartScreen may warn; choose Run anyway. Linux aarch64 is not built yet.
 
-**Live / Detached.** Detach freezes the tree while MQTT stays connected; Go live resumes ingest. Recording continues while Detached.
+**Live / Detached.** Detach freezes the view; Go live applies traffic received in the meantime, under the RAM cap.
 
 **Topic history limit.** Settings has a RAM slider (4–128 GB, default 12 GB). Older extra messages drop first; each topic keeps at least its latest payload. That cap is the in-memory topic store, not the whole process.
 

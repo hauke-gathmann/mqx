@@ -141,14 +141,27 @@ impl LiveHandle {
     }
 
     pub fn set_ingest(&self, enabled: bool) -> std::result::Result<SessionStatus, String> {
-        let status = {
+        let (status, batch, topic_message) = {
             let mut session = self
                 .session()
                 .map_err(|_| "session lock poisoned".to_string())?;
             session.set_ingest(enabled);
-            session.status_event()
+            let status = session.status_event();
+            if enabled {
+                let batch = session.take_pending_ui();
+                let topic_message = session.selected_topic_message();
+                (status, batch, topic_message)
+            } else {
+                (status, None, None)
+            }
         };
         let _ = self.events.send(SessionEvent::Status(status.clone()));
+        if let Some(batch) = batch {
+            let _ = self.events.send(SessionEvent::TreeBatch(batch));
+        }
+        if let Some(dto) = topic_message {
+            let _ = self.events.send(SessionEvent::TopicMessage(dto));
+        }
         Ok(status)
     }
 
@@ -301,7 +314,6 @@ async fn run_live(
     mut decoded_rx: mpsc::Receiver<crate::Message>,
     decode: std::thread::JoinHandle<()>,
 ) {
-    let mut batch = PendingBatch::default();
     let mut pending_subs: VecDeque<Sub> = VecDeque::new();
     let mut window_count = 0u64;
     let mut backoff = BACKOFF_START;
@@ -312,10 +324,7 @@ async fn run_live(
     let mut stats_tick = interval_at(start + STATS_INTERVAL, STATS_INTERVAL);
     stats_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    let (profile_id, epoch) = {
-        let guard = lock(&session);
-        (guard.id.clone(), guard.epoch())
-    };
+    let epoch = lock(&session).epoch();
 
     loop {
         if shutting_down(&shutdown) {
@@ -355,17 +364,13 @@ async fn run_live(
                         let disconnected = {
                             let guard = lock(&session);
                             guard.try_record(&inbound);
-                            if !guard.ingest_enabled {
-                                false
-                            } else {
-                                match raw_tx.try_send(inbound) {
-                                    Ok(()) => false,
-                                    Err(TrySendError::Full(_)) => {
-                                        debug!("dropping inbound; decode queue full");
-                                        false
-                                    }
-                                    Err(TrySendError::Disconnected(_)) => true,
+                            match raw_tx.try_send(inbound) {
+                                Ok(()) => false,
+                                Err(TrySendError::Full(_)) => {
+                                    debug!("dropping inbound; decode queue full");
+                                    false
                                 }
+                                Err(TrySendError::Disconnected(_)) => true,
                             }
                         };
                         if disconnected {
@@ -410,7 +415,7 @@ async fn run_live(
             }
             Some(message) = decoded_rx.recv() => {
                 window_count = window_count.saturating_add(1);
-                let (applied, status) = {
+                let (topic_message, status) = {
                     let mut guard = lock(&session);
                     let before = guard.ram_exhausted();
                     let applied = guard.ingest(message);
@@ -419,21 +424,33 @@ async fn run_live(
                     } else {
                         None
                     };
-                    (applied, status)
+                    let topic_message = if guard.ingest_enabled {
+                        applied.topic_message
+                    } else {
+                        None
+                    };
+                    (topic_message, status)
                 };
                 if let Some(status) = status {
                     let _ = event_tx.send(SessionEvent::Status(status));
                 }
-                if let Some(dto) = applied.topic_message {
+                if let Some(dto) = topic_message {
                     let _ = event_tx.send(SessionEvent::TopicMessage(dto));
                 }
-                batch.merge(applied.upserts, applied.deletes);
             }
             _ = wait_backoff(backoff_deadline) => {
                 backoff_deadline = None;
             }
             _ = batch_tick.tick() => {
-                if let Some(payload) = batch.take(&profile_id, epoch) {
+                let payload = {
+                    let mut guard = lock(&session);
+                    if guard.ingest_enabled {
+                        guard.take_pending_ui()
+                    } else {
+                        None
+                    }
+                };
+                if let Some(payload) = payload {
                     let _ = event_tx.send(SessionEvent::TreeBatch(payload));
                 }
             }
@@ -519,13 +536,13 @@ fn lock(session: &Mutex<Session>) -> std::sync::MutexGuard<'_, Session> {
 }
 
 #[derive(Default)]
-struct PendingBatch {
+pub(super) struct PendingBatch {
     upserts: HashMap<String, TreeNodeDto>,
     deletes: Vec<String>,
 }
 
 impl PendingBatch {
-    fn merge(&mut self, upserts: Vec<TreeNodeDto>, deletes: Vec<String>) {
+    pub(super) fn merge(&mut self, upserts: Vec<TreeNodeDto>, deletes: Vec<String>) {
         for path in deletes {
             self.upserts.remove(&path);
             if !self.deletes.iter().any(|existing| existing == &path) {
@@ -538,7 +555,7 @@ impl PendingBatch {
         }
     }
 
-    fn take(&mut self, profile_id: &str, epoch: u64) -> Option<TreeBatch> {
+    pub(super) fn take(&mut self, profile_id: &str, epoch: u64) -> Option<TreeBatch> {
         if self.upserts.is_empty() && self.deletes.is_empty() {
             return None;
         }
@@ -664,5 +681,67 @@ mod tests {
         assert_eq!(second.epoch(), handle2.epoch());
         assert_ne!(second.epoch(), first_epoch);
         handle2.stop().await;
+    }
+
+    fn inbound(topic: &str, payload: &'static [u8]) -> crate::Message {
+        decode_inbound(Inbound {
+            topic: topic.into(),
+            payload: bytes::Bytes::from_static(payload),
+            retain: false,
+            qos: crate::QoS::AtMostOnce,
+            dup: false,
+            timestamp: SystemTime::now(),
+        })
+    }
+
+    #[tokio::test]
+    async fn set_ingest_true_emits_status_then_pending_batch() {
+        let ui = UiConfig::default();
+        let (handle, mut events) =
+            LiveHandle::spawn(unreachable_profile("catchup"), None, &ui).unwrap();
+        let _ = events.recv().await;
+
+        {
+            let mut session = handle.session().unwrap();
+            session.select_topic(Some("home/lamp".into()));
+            session.set_ingest(false);
+            session.ingest(inbound("home/lamp", b"on"));
+            session.ingest(inbound("home/kitchen", b"1"));
+            session.ingest(inbound("home/lamp", b"off"));
+        }
+
+        let status = handle.set_ingest(true).unwrap();
+        assert!(status.ingest_enabled);
+        assert_ne!(status.status, crate::StatusKind::Disconnected);
+
+        let mut saw_status = false;
+        let mut saw_batch = false;
+        let mut saw_selected = false;
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline && !(saw_status && saw_batch && saw_selected) {
+            match tokio::time::timeout(Duration::from_millis(200), events.recv()).await {
+                Ok(Some(SessionEvent::Status(payload))) if payload.ingest_enabled => {
+                    saw_status = true;
+                }
+                Ok(Some(SessionEvent::TreeBatch(batch))) => {
+                    assert!(
+                        batch.upserts.iter().any(|node| node.path == "home/kitchen"),
+                        "catch-up batch must include detached topics"
+                    );
+                    saw_batch = true;
+                }
+                Ok(Some(SessionEvent::TopicMessage(dto))) => {
+                    assert_eq!(dto.topic, "home/lamp");
+                    assert_eq!(dto.payload_text, "off");
+                    saw_selected = true;
+                }
+                Ok(Some(_)) | Ok(None) | Err(_) => {}
+            }
+        }
+        assert!(saw_status, "Go live must emit status first");
+        assert!(saw_batch, "Go live must flush pending tree diffs");
+        assert!(saw_selected, "Go live must refresh the selected topic");
+
+        handle.stop().await;
     }
 }

@@ -78,8 +78,9 @@ pub struct Session {
     last_rate: f64,
     fresh_until: Duration,
     stale_after: Duration,
-    /// Orthogonal to Connecting/Reconnecting; ConnAck maps it to Connected vs Detached.
+    /// Explorer is live (not Detached). ConnAck maps this to Connected vs Detached.
     pub ingest_enabled: bool,
+    pending_ui: live::PendingBatch,
     status_rev: u64,
     profile_name: String,
     recorder: Option<Recorder>,
@@ -139,6 +140,7 @@ impl Session {
             fresh_until: ui.fresh_until,
             stale_after: ui.stale_after,
             ingest_enabled: true,
+            pending_ui: live::PendingBatch::default(),
             status_rev: 0,
             profile_name: profile.name.clone(),
             recorder: None,
@@ -266,7 +268,7 @@ impl Session {
         self.status = status;
     }
 
-    /// Freeze or resume topic-tree ingest. Does not disconnect.
+    /// Freeze or resume the Explorer view. Does not disconnect.
     /// Connecting/reconnecting keep their status; ConnAck applies this flag.
     pub fn set_ingest(&mut self, enabled: bool) {
         self.ingest_enabled = enabled;
@@ -404,15 +406,19 @@ impl Session {
             .map(|message| JqApplyResult::from_message(message, filter))
     }
 
+    pub fn take_pending_ui(&mut self) -> Option<TreeBatch> {
+        self.pending_ui.take(&self.id, self.epoch)
+    }
+
+    pub fn selected_topic_message(&self) -> Option<MessageDto> {
+        let topic = self.selected.as_deref()?;
+        let mut dto = self.get_message(topic, None)?;
+        dto.epoch = self.epoch;
+        Some(dto)
+    }
+
     /// Only write path for live (and later playback) ingress.
     pub fn ingest(&mut self, message: Message) -> ApplyResult {
-        if !self.ingest_enabled {
-            return ApplyResult {
-                topic_message: None,
-                upserts: Vec::new(),
-                deletes: Vec::new(),
-            };
-        }
         let topic = message.inbound.topic.clone();
         // WHY: empty retain is a delete; do not stream it as the selected payload.
         let retain_clear = message.inbound.retain && message.inbound.payload.is_empty();
@@ -465,6 +471,8 @@ impl Session {
             }
         }
 
+        self.pending_ui.merge(upserts.clone(), deletes.clone());
+
         ApplyResult {
             topic_message: emitted,
             upserts,
@@ -477,6 +485,7 @@ impl Session {
         self.selected = None;
         self.messages_total = 0;
         self.last_rate = 0.0;
+        self.pending_ui = live::PendingBatch::default();
     }
 
     fn take_evicted_upserts(&mut self) -> Vec<TreeNodeDto> {
@@ -710,30 +719,67 @@ mod tests {
         session.set_status(Status::Connected);
         session.ingest(msg("home/lamp", b"on", false));
         assert_eq!(session.stats(0.0).topics, 1);
+        let _ = session.take_pending_ui();
 
         session.set_ingest(false);
         assert!(matches!(session.status, Status::Detached { .. }));
         assert!(!session.ingest_enabled);
         session.ingest(msg("home/kitchen", b"1", false));
         session.ingest(msg("home/lamp", b"off", false));
-        assert_eq!(session.stats(0.0).topics, 1);
-        assert_eq!(session.stats(0.0).messages_total, 1);
+        assert_eq!(session.stats(0.0).topics, 2);
+        assert_eq!(session.stats(0.0).messages_total, 3);
+        assert_eq!(session.get_history_meta("home/lamp").unwrap().count, 2);
+        let mut paths: Vec<_> = session
+            .tree_children(&["home".into()])
+            .into_iter()
+            .map(|node| node.path)
+            .collect();
+        paths.sort();
+        assert_eq!(paths, ["home/kitchen", "home/lamp"]);
     }
 
     #[test]
-    fn go_live_subsequent_publish_upserts() {
+    fn go_live_after_detached_publishes_keeps_store() {
         let mut session = session();
         session.set_status(Status::Connected);
         session.ingest(msg("home/lamp", b"on", false));
+        let _ = session.take_pending_ui();
         session.set_ingest(false);
         session.ingest(msg("home/kitchen", b"1", false));
-        assert_eq!(session.stats(0.0).topics, 1);
+        assert_eq!(session.stats(0.0).topics, 2);
 
         session.set_ingest(true);
         assert!(matches!(session.status, Status::Connected));
         assert!(session.ingest_enabled);
-        session.ingest(msg("home/kitchen", b"1", false));
+        let batch = session.take_pending_ui().expect("catch-up batch");
+        assert!(
+            batch.upserts.iter().any(|node| node.path == "home/kitchen"),
+            "go live flushes topics received while detached"
+        );
         assert_eq!(session.stats(0.0).topics, 2);
+        let mut paths: Vec<_> = session
+            .tree_children(&["home".into()])
+            .into_iter()
+            .map(|node| node.path)
+            .collect();
+        paths.sort();
+        assert_eq!(paths, ["home/kitchen", "home/lamp"]);
+    }
+
+    #[test]
+    fn go_live_emits_selected_topic_message() {
+        let mut session = session();
+        session.set_status(Status::Connected);
+        session.select_topic(Some("home/lamp".into()));
+        session.ingest(msg("home/lamp", b"on", false));
+        let _ = session.take_pending_ui();
+        session.set_ingest(false);
+        session.ingest(msg("home/lamp", b"off", false));
+        session.set_ingest(true);
+        let dto = session.selected_topic_message().expect("selected latest");
+        assert_eq!(dto.topic, "home/lamp");
+        assert_eq!(dto.payload_text, "off");
+        assert_eq!(dto.epoch, 1);
     }
 
     #[test]
@@ -813,7 +859,7 @@ mod tests {
             timestamp: SystemTime::now(),
         });
         session.ingest(msg("home/kitchen", b"1", false));
-        assert_eq!(session.stats(0.0).topics, 0);
+        assert_eq!(session.stats(0.0).topics, 1);
 
         let recorder = session.take_recorder().expect("recorder");
         let stopped = recorder.stop().unwrap();

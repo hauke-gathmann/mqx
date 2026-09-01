@@ -246,7 +246,7 @@
       : emptyKind === "connecting"
         ? "The topic tree will appear here once the broker session is up."
         : status === "detached"
-          ? "The tree is frozen. Go live to ingest new messages."
+          ? "The tree is frozen. Go live to apply traffic received in the meantime."
           : "Messages show up as they arrive. If this stays empty, check the profile subscriptions.",
   );
 
@@ -336,6 +336,68 @@
       error = errorMessage(err);
     }
   }
+
+  async function resyncFromStore() {
+    const paths = [...tree.loaded].sort(
+      (a, b) => pathSegments(a).length - pathSegments(b).length,
+    );
+    for (const path of paths) {
+      inflight.delete(path);
+      try {
+        await loadChildren(path);
+      } catch (err) {
+        error = errorMessage(err);
+        return;
+      }
+    }
+    const topic = selected;
+    if (!topic) {
+      return;
+    }
+    const token = seq;
+    const follow = historyIndex == null || meta == null || historyIndex === meta.latestIndex;
+    try {
+      const [nextMessage, nextMeta, nextHistory] = await Promise.all([
+        getMessage(topic, null),
+        getHistoryMeta(topic),
+        listHistory(topic),
+      ]);
+      if (token !== seq || selected !== topic) {
+        return;
+      }
+      meta = nextMeta;
+      history = nextHistory;
+      if (follow) {
+        message = nextMessage;
+        historyIndex = nextMeta.latestIndex;
+      } else {
+        const clamped = clampHistoryIndex(nextHistory, nextMeta.latestIndex, historyIndex);
+        if (clamped !== historyIndex) {
+          historyIndex = clamped;
+          void openHistory(clamped, true);
+        }
+      }
+    } catch (err) {
+      if (token !== seq || selected !== topic) {
+        return;
+      }
+      if (isTopicNotFound(err)) {
+        void clearSelection();
+        return;
+      }
+      error = errorMessage(err);
+    }
+  }
+
+  let prevStatus: SessionStatusKind | null = null;
+  $effect(() => {
+    const next = status;
+    const prev = prevStatus;
+    prevStatus = next;
+    if (prev === "detached" && next === "connected") {
+      void resyncFromStore();
+    }
+  });
 
   function onBatch(batch: TreeBatch) {
     if (status === "detached" || !sameSession(batch.epoch, batch.profileId)) {

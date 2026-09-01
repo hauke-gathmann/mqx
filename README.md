@@ -1,8 +1,18 @@
 # mqx
 
-mqx is a desktop MQTT explorer. Connect to a broker, watch the topic tree fill in as messages arrive, inspect payloads, and keep connection profiles (including TLS files) on disk.
+mqx is a desktop MQTT explorer. One window is one broker: connect, watch the topic tree fill as messages arrive, inspect payloads, and keep connection profiles (including TLS files) on disk. Passwords go in the OS keychain, or a private file when no keychain is available.
 
-One window is one broker. Saved profiles remember host, protocol, subscriptions, and TLS. JSON payloads pretty-print in place; jq filters and fuzzy topic search sit next to the tree. Passwords go in the OS keychain (or a private file when no keychain is available).
+## Explorer
+
+The topic tree fills in as publishes arrive. Search filters paths; pick a topic to scroll its history and inspect the payload. JSON pretty-prints in place, with jq on the same pane.
+
+![Explorer — topic tree, history, and payload inspector](docs/images/explorer.png)
+
+## Playback
+
+While connected, Record writes mqtt-trace JSONL (raw payloads). Playback publishes a capture onto the broker, including retain flags — that can change retained state on the target. Stay Live to watch the tree, or Detach to freeze the view; replay itself does not flip Live / Detached.
+
+![Playback — replaying a capture onto the connected broker](docs/images/playback.png)
 
 ## Install
 
@@ -20,23 +30,9 @@ Download the installer from the [latest GitHub Release](https://github.com/hauke
 
 The first builds are unsigned. macOS: right-click the app → Open. Windows: SmartScreen may warn; choose Run anyway. Linux aarch64 is not built yet.
 
-## Explorer
-
-The topic tree fills in as publishes arrive. Search filters paths; pick a topic to scroll its history and inspect the payload. JSON pretty-prints in place, with jq on the same pane.
-
-![Explorer](docs/images/explorer.png)
-
-## Playback
-
-While connected, Record writes mqtt-trace JSONL (raw payloads). The Playback tab lists captures and publishes them onto a broker, **including retain flags** — that can change retained state on the target.
-
-![Playback](docs/images/playback.png)
-
 **Live / Detached.** Detach freezes the **view**; Go live applies traffic received in the meantime, still under the RAM cap. Recording continues while Detached.
 
 **Topic history limit.** Settings has a RAM slider (4–128 GB, default 12 GB). Older extra messages drop first; each topic keeps at least its latest payload. That cap is the in-memory topic store, not the whole process.
-
-**Record and replay.** Replay does not flip Live / Detached; stay Live to watch the tree, or Detached to dump traffic without moving the view.
 
 ## Develop
 

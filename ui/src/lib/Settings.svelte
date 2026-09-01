@@ -1,22 +1,63 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { pickFolder } from "./api";
+  import { errorMessage } from "./types";
   import { THEMES, type Theme } from "./theme";
+  import { RAM_LIMIT_MAX_GB, RAM_LIMIT_MIN_GB, ramLimitGb } from "./types";
+
+  const GIB = 1024 * 1024 * 1024;
 
   let {
     theme,
+    ramLimitBytes,
+    recordDirectory,
     busy = false,
     error = null,
     oncancel,
     ontheme,
+    onramlimit,
+    onrecordDirectory,
   }: {
     theme: Theme;
+    ramLimitBytes: number;
+    recordDirectory: string;
     busy?: boolean;
     error?: string | null;
     oncancel: () => void;
     ontheme: (theme: Theme) => void;
+    onramlimit: (bytes: number) => void;
+    onrecordDirectory: (directory: string) => void;
   } = $props();
 
+  let ramGb = $state(12);
   let dialog = $state<HTMLDivElement | null>(null);
+  let directory = $state("");
+  let pickError = $state<string | null>(null);
+
+  $effect(() => {
+    directory = recordDirectory;
+  });
+
+  function persistDirectory() {
+    onrecordDirectory(directory.trim());
+  }
+
+  async function browse() {
+    pickError = null;
+    try {
+      const { path } = await pickFolder();
+      directory = path;
+      onrecordDirectory(path);
+    } catch (err) {
+      if (errorMessage(err) !== "cancelled") {
+        pickError = errorMessage(err);
+      }
+    }
+  }
+
+  $effect(() => {
+    ramGb = Math.min(RAM_LIMIT_MAX_GB, Math.max(RAM_LIMIT_MIN_GB, ramLimitGb(ramLimitBytes)));
+  });
 
   onMount(() => {
     const first = dialog?.querySelector<HTMLElement>("button, input");
@@ -62,9 +103,46 @@
           {/each}
         </div>
       </fieldset>
+      <fieldset class="ram">
+        <legend>Topic history limit</legend>
+        <div class="slider-row">
+          <input
+            type="range"
+            min={RAM_LIMIT_MIN_GB}
+            max={RAM_LIMIT_MAX_GB}
+            step="1"
+            value={ramGb}
+            disabled={busy}
+            oninput={(event) => {
+              ramGb = Number(event.currentTarget.value);
+            }}
+            onchange={() => onramlimit(ramGb * GIB)}
+          />
+          <span class="ram-value">{ramGb} GB</span>
+        </div>
+        <p class="hint">
+          Drops older messages when the in-memory store exceeds this. Each topic keeps at least its
+          latest payload. This is not the whole app’s RAM (the window uses extra).
+        </p>
+      </fieldset>
+      <label class="directory">
+        Recordings folder
+        <span class="file">
+          <input
+            bind:value={directory}
+            spellcheck="false"
+            disabled={busy}
+            placeholder="app data / recordings"
+            onblur={persistDirectory}
+            onchange={persistDirectory}
+          />
+          <button type="button" disabled={busy} onclick={() => void browse()}>Browse</button>
+        </span>
+        <span class="hint">Empty uses the default. Captures include raw payloads.</span>
+      </label>
     </div>
-    {#if error}
-      <p class="error" role="alert">{error}</p>
+    {#if pickError || error}
+      <p class="error" role="alert">{pickError ?? error}</p>
     {/if}
     <footer>
       <button type="button" onclick={oncancel}>Close</button>
@@ -86,7 +164,7 @@
   }
 
   .modal {
-    width: min(24rem, 100%);
+    width: min(32rem, 100%);
     display: flex;
     flex-direction: column;
     background: var(--bg-elevated);
@@ -113,13 +191,39 @@
     padding: var(--space-4) var(--space-5);
   }
 
-  .themes {
+  .themes,
+  .ram {
     border: 0;
     margin: 0;
     padding: 0;
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
+  }
+
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .slider-row input[type="range"] {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .ram-value {
+    flex-shrink: 0;
+    min-width: 3.5rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+  }
+
+  .hint {
+    margin: 0;
+    color: var(--fg-muted);
+    font-size: 0.8rem;
+    line-height: 1.4;
   }
 
   legend {
@@ -164,6 +268,57 @@
     position: absolute;
     opacity: 0;
     pointer-events: none;
+  }
+
+  .directory {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    color: var(--fg-faint);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .file {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .file input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    border-radius: var(--radius-sm);
+    padding: 0.4rem 0.55rem;
+    color: var(--fg);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .file button {
+    border: 1px solid var(--border-strong);
+    background: var(--bg-hover);
+    border-radius: var(--radius-sm);
+    padding: 0.4rem 0.7rem;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--fg);
+  }
+
+  .hint {
+    color: var(--fg-faint);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: none;
   }
 
   .error {

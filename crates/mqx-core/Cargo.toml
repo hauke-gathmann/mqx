@@ -7,6 +7,7 @@ license = "MIT"
 publish = false
 
 [dependencies]
+base64 = "0.22"
 bytes = "1"
 directories = "6"
 humantime-serde = "1.1.1"

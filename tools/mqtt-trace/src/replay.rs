@@ -1,7 +1,7 @@
 use std::{
     fs::File,
     io::{BufRead, BufReader},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -11,7 +11,7 @@ use tokio::time::{Instant, sleep};
 
 use crate::{
     broker::{self, Broker, qos_from_u8},
-    event::TraceEvent,
+    event::{self, TraceEvent},
 };
 
 pub struct ReplayOpts {
@@ -130,12 +130,22 @@ pub async fn run(opts: ReplayOpts) -> Result<()> {
 
 fn load_events(path: &PathBuf) -> Result<Vec<TraceEvent>> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let reader = BufReader::new(file);
+    load_events_from(BufReader::new(file), path)
+}
+
+fn load_events_from<R: BufRead>(reader: R, path: &Path) -> Result<Vec<TraceEvent>> {
     let mut events = Vec::new();
+    let mut first_nonempty = true;
     for (i, line) in reader.lines().enumerate() {
         let line = line.with_context(|| format!("read {} line {}", path.display(), i + 1))?;
         if line.trim().is_empty() {
             continue;
+        }
+        if first_nonempty {
+            first_nonempty = false;
+            if event::is_recording_header(&line) {
+                continue;
+            }
         }
         events.push(
             TraceEvent::from_jsonl(&line)
@@ -172,5 +182,35 @@ mod tests {
             wait_duration(0, 100, 1.0, Duration::from_millis(150)),
             Duration::ZERO
         );
+    }
+
+    #[test]
+    fn load_events_skips_in_app_header() {
+        let data = concat!(
+            r#"{"kind":"mqx-recording","v":1,"startedAt":"2026-08-26T12:00:00.000Z","endedAt":"2026-08-26T12:00:32.100Z","profileId":"p","profileName":"n","broker":"mqtt://localhost:1883","messages":1,"topics":1,"appVersion":"0.2.0"}"#,
+            "\n",
+            r#"{"t_ms":1787735165782,"topic":"home/lamp","qos":0,"retain":false,"dup":false,"payload":"AAEC/w=="}"#,
+            "\n",
+        );
+        let events = load_events_from(data.as_bytes(), &PathBuf::from("header.jsonl")).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].topic, "home/lamp");
+        assert_eq!(events[0].payload_bytes().unwrap(), vec![0, 1, 2, 255]);
+    }
+
+    #[test]
+    fn load_events_headerless_mqtt_trace() {
+        let data = concat!(
+            r#"{"t_ms":1,"topic":"a","qos":0,"retain":false,"payload":"YQ=="}"#,
+            "\n",
+            r#"{"t_ms":2,"topic":"b","qos":1,"retain":true,"dup":true,"payload":"Yg=="}"#,
+            "\n",
+        );
+        let events = load_events_from(data.as_bytes(), &PathBuf::from("trace.jsonl")).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].topic, "a");
+        assert!(!events[0].dup);
+        assert_eq!(events[1].topic, "b");
+        assert!(events[1].dup);
     }
 }

@@ -57,9 +57,20 @@ pub fn build<R: Runtime>(
     let new_connection = MenuItemBuilder::with_id("new-connection", "New Connection")
         .accelerator("CmdOrCtrl+N")
         .build(app)?;
+    let detach = MenuItemBuilder::with_id("detach", "Detach").build(app)?;
+    let go_live = MenuItemBuilder::with_id("go-live", "Go Live").build(app)?;
+    let toggle_recording = MenuItemBuilder::with_id("toggle-recording", "Start/Stop Recording")
+        .accelerator("CmdOrCtrl+Shift+R")
+        .build(app)?;
     let disconnect = MenuItemBuilder::with_id("disconnect", "Disconnect").build(app)?;
     let connections = SubmenuBuilder::new(app, "Connections")
         .item(&new_connection)
+        .separator()
+        .item(&detach)
+        .item(&go_live)
+        .separator()
+        .item(&toggle_recording)
+        .separator()
         .item(&disconnect)
         .build()?;
 
@@ -92,8 +103,13 @@ pub fn build<R: Runtime>(
     let search = MenuItemBuilder::with_id("search", "Search Topics")
         .accelerator("CmdOrCtrl+K")
         .build(app)?;
+    let explorer = MenuItemBuilder::with_id("tab-explorer", "Explorer").build(app)?;
+    let playback = MenuItemBuilder::with_id("tab-playback", "Playback").build(app)?;
     let view = SubmenuBuilder::new(app, "View")
         .item(&theme_submenu)
+        .separator()
+        .item(&explorer)
+        .item(&playback)
         .separator()
         .item(&search)
         .build()?;
@@ -125,8 +141,23 @@ pub fn on_event(app: &AppHandle, id: &str) {
         "disconnect" => {
             let _ = app.emit("menu/disconnect", ());
         }
+        "detach" => {
+            let _ = app.emit("menu/set-ingest", false);
+        }
+        "go-live" => {
+            let _ = app.emit("menu/set-ingest", true);
+        }
+        "toggle-recording" => {
+            let _ = app.emit("menu/toggle-recording", ());
+        }
         "search" => {
             let _ = app.emit("menu/search", ());
+        }
+        "tab-explorer" => {
+            let _ = app.emit("menu/tab", "explorer");
+        }
+        "tab-playback" => {
+            let _ = app.emit("menu/tab", "playback");
         }
         "theme-dark" => set_theme(app, "dark"),
         "theme-light" => set_theme(app, "light"),

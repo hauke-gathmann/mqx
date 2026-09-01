@@ -2308,7 +2308,7 @@ dependencies = [
 
 [[package]]
 name = "mqx"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mqx-core",
  "serde",
@@ -2324,6 +2324,7 @@ dependencies = [
 name = "mqx-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "directories",
  "humantime-serde",

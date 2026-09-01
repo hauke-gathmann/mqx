@@ -1,0 +1,3 @@
+{"kind":"mqx-recording","v":1,"startedAt":"2026-08-26T12:00:00.000Z","endedAt":"2026-08-26T12:00:32.100Z","profileId":"abc","profileName":"Home Assistant","broker":"mqtts://ha.local:8883","messages":2,"topics":1,"appVersion":"0.2.0"}
+{"t_ms":1787735165782,"topic":"home/lamp","qos":0,"retain":false,"dup":false,"payload":"eyJvbiI6dHJ1ZX0="}
+{"t_ms":1787735165882,"topic":"home/lamp","qos":1,"retain":true,"dup":false,"payload":"AAEC/w=="}

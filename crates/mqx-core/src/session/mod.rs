@@ -1,5 +1,6 @@
 mod dto;
 mod live;
+mod replay;
 mod tls;
 
 use std::time::{Duration, Instant, SystemTime};
@@ -11,12 +12,15 @@ pub use dto::{
     SessionStatus, StatusKind, TreeBatch, TreeNodeDto,
 };
 pub use live::{LiveHandle, SessionEvent};
+pub use replay::{PlaybackProgress, PlaybackState, ReplayJob, assert_replay_target, run_replay};
 pub use tls::broker_display;
 
 use crate::{
     config::UiConfig,
-    message::{Format, Freshness, Message},
+    error::{Error, Result},
+    message::{Format, Freshness, Inbound, Message},
     profiles::{ConnectionProfile, Subscription},
+    record::{RecordStatus, Recorder, StoppedRecording},
     tree::{SearchMode, TopicTree, UpsertOutcome},
 };
 
@@ -26,6 +30,7 @@ pub type ProfileId = String;
 pub enum Status {
     Connecting,
     Connected,
+    Detached { since: Instant },
     Reconnecting { since: Instant },
     Disconnected,
     Error { msg: String },
@@ -36,6 +41,7 @@ impl Status {
         match self {
             Self::Connecting => StatusKind::Connecting,
             Self::Connected => StatusKind::Connected,
+            Self::Detached { .. } => StatusKind::Detached,
             Self::Reconnecting { .. } => StatusKind::Reconnecting,
             Self::Disconnected => StatusKind::Disconnected,
             Self::Error { .. } => StatusKind::Error,
@@ -69,8 +75,23 @@ pub struct Session {
     error: Option<String>,
     messages_total: u64,
     epoch: u64,
+    last_rate: f64,
     fresh_until: Duration,
     stale_after: Duration,
+    /// Orthogonal to Connecting/Reconnecting; ConnAck maps it to Connected vs Detached.
+    pub ingest_enabled: bool,
+    status_rev: u64,
+    profile_name: String,
+    recorder: Option<Recorder>,
+    stopped_recording: Option<StoppedRecording>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RecordingContext {
+    pub epoch: u64,
+    pub profile_id: String,
+    pub profile_name: String,
+    pub broker: String,
 }
 
 pub struct ApplyResult {
@@ -106,7 +127,7 @@ impl Session {
             id: profile.id.clone(),
             status: Status::Connecting,
             client,
-            tree: TopicTree::new(ui.buffer_size),
+            tree: TopicTree::with_limits(ui.buffer_size, ui.ram_limit_bytes),
             selected: None,
             subscriptions,
             source: Source::Live,
@@ -114,8 +135,14 @@ impl Session {
             error: None,
             messages_total: 0,
             epoch,
+            last_rate: 0.0,
             fresh_until: ui.fresh_until,
             stale_after: ui.stale_after,
+            ingest_enabled: true,
+            status_rev: 0,
+            profile_name: profile.name.clone(),
+            recorder: None,
+            stopped_recording: None,
         }
     }
 
@@ -139,6 +166,73 @@ impl Session {
         &self.broker
     }
 
+    pub fn profile_name(&self) -> &str {
+        &self.profile_name
+    }
+
+    pub fn recording_context(&self) -> RecordingContext {
+        RecordingContext {
+            epoch: self.epoch,
+            profile_id: self.id.clone(),
+            profile_name: self.profile_name.clone(),
+            broker: self.broker.clone(),
+        }
+    }
+
+    pub fn recorder(&self) -> Option<&Recorder> {
+        self.recorder.as_ref()
+    }
+
+    pub fn try_record(&self, inbound: &Inbound) {
+        if let Some(recorder) = &self.recorder {
+            recorder.try_append(inbound);
+        }
+    }
+
+    pub fn record_status(&self) -> Option<RecordStatus> {
+        self.recorder
+            .as_ref()
+            .map(|recorder| recorder.status(self.epoch))
+    }
+
+    pub fn start_recording(
+        &mut self,
+        directory: impl AsRef<std::path::Path>,
+    ) -> Result<RecordStatus> {
+        if self.recorder.is_some() {
+            return Err(Error::Recording("already recording".into()));
+        }
+        self.stopped_recording = None;
+        let recorder = Recorder::start(directory)?;
+        let status = recorder.status(self.epoch);
+        self.recorder = Some(recorder);
+        Ok(status)
+    }
+
+    pub fn take_recorder(&mut self) -> Option<Recorder> {
+        self.recorder.take()
+    }
+
+    pub fn take_stopped_recording(&mut self) -> Option<StoppedRecording> {
+        self.stopped_recording.take()
+    }
+
+    pub fn stopped_recording(&self) -> Option<&StoppedRecording> {
+        self.stopped_recording.as_ref()
+    }
+
+    pub fn has_unsaved_recording(&self) -> bool {
+        self.recorder.is_some()
+            || self
+                .stopped_recording
+                .as_ref()
+                .is_some_and(|stopped| stopped.temp_path.exists())
+    }
+
+    pub fn set_stopped_recording(&mut self, stopped: StoppedRecording) {
+        self.stopped_recording = Some(stopped);
+    }
+
     pub fn select_topic(&mut self, topic: Option<String>) {
         self.selected = topic.filter(|t| !t.is_empty());
     }
@@ -147,13 +241,56 @@ impl Session {
         self.selected.as_deref()
     }
 
+    pub fn ram_exhausted(&self) -> bool {
+        self.tree.ram_exhausted()
+    }
+
+    pub fn has_leaf(&self, topic: &str) -> bool {
+        self.tree.get(topic).is_some()
+    }
+
+    pub fn set_ram_limit(&mut self, bytes: u64) -> Vec<TreeNodeDto> {
+        self.tree.set_ram_limit(bytes);
+        self.take_evicted_upserts()
+    }
+
     pub fn set_status(&mut self, status: Status) {
         if let Status::Error { msg } = &status {
             self.error = Some(msg.clone());
-        } else if matches!(status, Status::Connected | Status::Connecting) {
+        } else if matches!(
+            status,
+            Status::Connected | Status::Connecting | Status::Detached { .. }
+        ) {
             self.error = None;
         }
         self.status = status;
+    }
+
+    /// Freeze or resume topic-tree ingest. Does not disconnect.
+    /// Connecting/reconnecting keep their status; ConnAck applies this flag.
+    pub fn set_ingest(&mut self, enabled: bool) {
+        self.ingest_enabled = enabled;
+        match self.status {
+            Status::Connected if !enabled => {
+                self.set_status(Status::Detached {
+                    since: Instant::now(),
+                });
+            }
+            Status::Detached { .. } if enabled => {
+                self.set_status(Status::Connected);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn on_connack(&mut self) {
+        if self.ingest_enabled {
+            self.set_status(Status::Connected);
+        } else {
+            self.set_status(Status::Detached {
+                since: Instant::now(),
+            });
+        }
     }
 
     pub fn set_io_error(&mut self, message: String) {
@@ -167,7 +304,8 @@ impl Session {
         self.error = Some(message);
     }
 
-    pub fn status_event(&self) -> SessionStatus {
+    pub fn status_event(&mut self) -> SessionStatus {
+        self.status_rev = self.status_rev.saturating_add(1);
         let error = match &self.status {
             Status::Error { msg } => Some(msg.clone()),
             _ => self.error.clone(),
@@ -175,19 +313,29 @@ impl Session {
         SessionStatus {
             profile_id: Some(self.id.clone()),
             epoch: self.epoch,
+            rev: self.status_rev,
             status: self.status.kind(),
+            ingest_enabled: self.ingest_enabled,
             error,
             broker: self.broker.clone(),
+            ram_exhausted: self.tree.ram_exhausted(),
         }
     }
 
-    pub fn stats(&self, messages_per_sec: f64) -> SessionStats {
+    pub fn stats(&mut self, messages_per_sec: f64) -> SessionStats {
+        self.last_rate = messages_per_sec;
+        self.stats_snapshot()
+    }
+
+    pub fn stats_snapshot(&self) -> SessionStats {
         SessionStats {
             profile_id: self.id.clone(),
             epoch: self.epoch,
             topics: self.tree.topic_count() as u64,
             messages_total: self.messages_total,
-            messages_per_sec,
+            messages_per_sec: self.last_rate,
+            stored_bytes: self.tree.stored_bytes(),
+            ram_limit_bytes: self.tree.ram_limit(),
         }
     }
 
@@ -219,7 +367,7 @@ impl Session {
         let leaf = self.tree.get(topic)?;
         Some(HistoryMeta {
             count: leaf.message_count(),
-            latest_index: leaf.history.len(),
+            latest_index: leaf.latest.seq as usize,
         })
     }
 
@@ -228,13 +376,9 @@ impl Session {
         let mut items: Vec<HistoryItemDto> = leaf
             .history
             .iter()
-            .enumerate()
-            .map(|(index, message)| HistoryItemDto::from_message(index, message))
+            .map(HistoryItemDto::from_message)
             .collect();
-        items.push(HistoryItemDto::from_message(
-            leaf.history.len(),
-            &leaf.latest,
-        ));
+        items.push(HistoryItemDto::from_message(&leaf.latest));
         Some(items)
     }
 
@@ -262,6 +406,13 @@ impl Session {
 
     /// Only write path for live (and later playback) ingress.
     pub fn ingest(&mut self, message: Message) -> ApplyResult {
+        if !self.ingest_enabled {
+            return ApplyResult {
+                topic_message: None,
+                upserts: Vec::new(),
+                deletes: Vec::new(),
+            };
+        }
         let topic = message.inbound.topic.clone();
         // WHY: empty retain is a delete; do not stream it as the selected payload.
         let retain_clear = message.inbound.retain && message.inbound.payload.is_empty();
@@ -283,6 +434,7 @@ impl Session {
 
         let mut upserts = Vec::new();
         let mut deletes = Vec::new();
+        let mut emitted = topic_message;
         match outcome {
             UpsertOutcome::Inserted => {
                 upserts.extend(self.collect_path_dtos(&topic));
@@ -291,6 +443,9 @@ impl Session {
                 if let Some(dto) = self.node_dto(&topic) {
                     upserts.push(dto);
                 }
+            }
+            UpsertOutcome::Ignored => {
+                emitted = None;
             }
             UpsertOutcome::Deleted { pruned } => {
                 deletes = pruned;
@@ -304,17 +459,32 @@ impl Session {
             }
         }
 
+        for dto in self.take_evicted_upserts() {
+            if !upserts.iter().any(|existing| existing.path == dto.path) {
+                upserts.push(dto);
+            }
+        }
+
         ApplyResult {
-            topic_message,
+            topic_message: emitted,
             upserts,
             deletes,
         }
     }
 
     pub fn clear_tree(&mut self) {
-        self.tree = TopicTree::new(self.tree.buffer_size());
+        self.tree = TopicTree::with_limits(self.tree.buffer_size(), self.tree.ram_limit());
         self.selected = None;
         self.messages_total = 0;
+        self.last_rate = 0.0;
+    }
+
+    fn take_evicted_upserts(&mut self) -> Vec<TreeNodeDto> {
+        self.tree
+            .take_evicted()
+            .into_iter()
+            .filter_map(|topic| self.node_dto(&topic))
+            .collect()
     }
 
     fn collect_path_dtos(&self, topic: &str) -> Vec<TreeNodeDto> {
@@ -430,6 +600,7 @@ mod tests {
             payload: Bytes::copy_from_slice(payload),
             retain,
             qos: QoS::AtMostOnce,
+            dup: false,
             timestamp: SystemTime::now(),
         })
     }
@@ -526,10 +697,147 @@ mod tests {
     fn default_status_and_source() {
         let session = session();
         assert!(matches!(session.status, Status::Connecting));
+        assert!(session.ingest_enabled);
         assert!(matches!(session.source(), Source::Live));
         assert_eq!(session.subscriptions()[0].topic, "home/#");
         assert_eq!(session.broker(), "mqtt://localhost:1883");
         assert_eq!(session.epoch(), 1);
+    }
+
+    #[test]
+    fn detached_publish_does_not_change_topic_count() {
+        let mut session = session();
+        session.set_status(Status::Connected);
+        session.ingest(msg("home/lamp", b"on", false));
+        assert_eq!(session.stats(0.0).topics, 1);
+
+        session.set_ingest(false);
+        assert!(matches!(session.status, Status::Detached { .. }));
+        assert!(!session.ingest_enabled);
+        session.ingest(msg("home/kitchen", b"1", false));
+        session.ingest(msg("home/lamp", b"off", false));
+        assert_eq!(session.stats(0.0).topics, 1);
+        assert_eq!(session.stats(0.0).messages_total, 1);
+    }
+
+    #[test]
+    fn go_live_subsequent_publish_upserts() {
+        let mut session = session();
+        session.set_status(Status::Connected);
+        session.ingest(msg("home/lamp", b"on", false));
+        session.set_ingest(false);
+        session.ingest(msg("home/kitchen", b"1", false));
+        assert_eq!(session.stats(0.0).topics, 1);
+
+        session.set_ingest(true);
+        assert!(matches!(session.status, Status::Connected));
+        assert!(session.ingest_enabled);
+        session.ingest(msg("home/kitchen", b"1", false));
+        assert_eq!(session.stats(0.0).topics, 2);
+    }
+
+    #[test]
+    fn connack_while_detached_stays_detached() {
+        let mut session = session();
+        session.set_status(Status::Connected);
+        session.set_ingest(false);
+        session.set_io_error("connection lost".into());
+        assert!(matches!(session.status, Status::Reconnecting { .. }));
+        assert!(!session.ingest_enabled);
+
+        session.on_connack();
+        assert!(matches!(session.status, Status::Detached { .. }));
+        assert!(!session.ingest_enabled);
+        assert_eq!(session.status.kind(), StatusKind::Detached);
+    }
+
+    #[test]
+    fn connack_while_live_is_connected() {
+        let mut session = session();
+        session.set_io_error("connection lost".into());
+        assert!(session.ingest_enabled);
+        session.on_connack();
+        assert!(matches!(session.status, Status::Connected));
+        assert!(session.ingest_enabled);
+    }
+
+    #[test]
+    fn status_event_carries_ingest_flag_and_monotonic_rev() {
+        let mut session = session();
+        let first = session.status_event();
+        assert!(first.ingest_enabled);
+        assert_eq!(first.rev, 1);
+        assert_eq!(first.status, StatusKind::Connecting);
+
+        session.set_status(Status::Connected);
+        session.set_ingest(false);
+        session.set_io_error("connection lost".into());
+        let reconnecting = session.status_event();
+        assert!(!reconnecting.ingest_enabled);
+        assert_eq!(reconnecting.status, StatusKind::Reconnecting);
+        assert_eq!(reconnecting.rev, 2);
+
+        session.on_connack();
+        let detached = session.status_event();
+        assert!(!detached.ingest_enabled);
+        assert_eq!(detached.status, StatusKind::Detached);
+        assert!(detached.rev > reconnecting.rev);
+    }
+
+    #[test]
+    fn set_ingest_does_not_disconnect() {
+        let mut session = session();
+        session.set_status(Status::Connected);
+        session.set_ingest(false);
+        assert!(!matches!(
+            session.status,
+            Status::Disconnected | Status::Error { .. }
+        ));
+        session.set_ingest(true);
+        assert!(matches!(session.status, Status::Connected));
+    }
+
+    #[test]
+    fn detached_still_records_inbound() {
+        let mut session = session();
+        session.set_status(Status::Connected);
+        session.set_ingest(false);
+        let dir = tempfile::tempdir().unwrap();
+        session.start_recording(dir.path()).unwrap();
+        session.try_record(&Inbound {
+            topic: "home/lamp".into(),
+            payload: Bytes::from_static(b"on"),
+            retain: false,
+            qos: QoS::AtMostOnce,
+            dup: false,
+            timestamp: SystemTime::now(),
+        });
+        session.ingest(msg("home/kitchen", b"1", false));
+        assert_eq!(session.stats(0.0).topics, 0);
+
+        let recorder = session.take_recorder().expect("recorder");
+        let stopped = recorder.stop().unwrap();
+        assert_eq!(stopped.messages, 1);
+        let (_, events) = crate::load_recording(&stopped.temp_path).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].topic, "home/lamp");
+    }
+
+    #[test]
+    fn missing_temp_is_not_unsaved() {
+        let mut session = session();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".mqx-gone.jsonl");
+        session.set_stopped_recording(StoppedRecording {
+            temp_path: path,
+            messages: 1,
+            topics: 1,
+            started_ms: 1,
+            ended_ms: 2,
+            dropped: 0,
+            bytes: 0,
+        });
+        assert!(!session.has_unsaved_recording());
     }
 
     #[test]
@@ -588,5 +896,56 @@ mod tests {
         // Empty retain is a real MQTT packet; header totals include it.
         assert_eq!(session.stats(0.0).messages_total, 2);
         assert!(session.tree_children(&[]).is_empty());
+    }
+
+    #[test]
+    fn ingest_skips_when_ram_exhausted() {
+        let mut session = session();
+        session.ingest(msg("a", b"hello", false));
+        session.ingest(msg("b", b"world", false));
+        let stored = session.stats(0.0).stored_bytes;
+        session.set_ram_limit(stored.saturating_sub(1));
+        assert!(session.ram_exhausted());
+
+        session.select_topic(Some("c".into()));
+        let result = session.ingest(msg("c", b"nope", false));
+        assert!(result.topic_message.is_none());
+        assert!(result.upserts.is_empty());
+        assert!(session.get_message("c", None).is_none());
+        assert_eq!(session.stats(0.0).messages_total, 3);
+        assert!(session.status_event().ram_exhausted);
+    }
+
+    #[test]
+    fn empty_retain_while_exhausted_allows_ingest_again() {
+        let mut session = session();
+        session.ingest(msg("a", b"hello", false));
+        session.ingest(msg("b", b"world", false));
+        let stored = session.stats(0.0).stored_bytes;
+        session.set_ram_limit(stored.saturating_sub(1));
+        assert!(session.ram_exhausted());
+
+        let result = session.ingest(msg("a", b"", true));
+        assert!(result.deletes.contains(&"a".to_string()));
+        assert!(!session.ram_exhausted());
+        assert!(session.get_message("a", None).is_none());
+
+        let result = session.ingest(msg("c", b"ok", false));
+        assert!(result.upserts.iter().any(|node| node.path == "c"));
+        assert!(session.get_message("c", None).is_some());
+    }
+
+    #[test]
+    fn set_ram_limit_returns_upserts_for_evicted_topics() {
+        let mut session = session();
+        session.ingest(msg("a", b"1", false));
+        session.ingest(msg("a", b"2", false));
+        session.ingest(msg("a", b"3", false));
+        session.ingest(msg("b", b"1", false));
+        session.ingest(msg("b", b"2", false));
+        session.ingest(msg("b", b"3", false));
+        let upserts = session.set_ram_limit(900);
+        assert!(upserts.iter().any(|node| node.path == "a"));
+        assert_eq!(session.get_history_meta("a").unwrap().count, 1);
     }
 }

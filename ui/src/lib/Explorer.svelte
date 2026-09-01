@@ -1,6 +1,6 @@
 <script lang="ts">
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import {
     getHistoryMeta,
     getMessage,
@@ -11,7 +11,7 @@
   } from "./api";
   import { writeClipboard } from "./clipboard";
   import Inspector from "./Inspector.svelte";
-  import MessageList from "./MessageList.svelte";
+  import MessageList, { listPageSize } from "./MessageList.svelte";
   import TopicTree from "./TopicTree.svelte";
   import {
     ROOT,
@@ -61,6 +61,7 @@
   let now = $state(Date.now());
   let pane = $state<"tree" | "messages" | "inspector">("tree");
   let searchEl = $state<HTMLInputElement | null>(null);
+  let messageListEl = $state<HTMLDivElement | null>(null);
   let loading = $state(new Set<string>([ROOT]));
   let queued = $state<TreeBatch[]>([]);
   let error = $state<string | null>(null);
@@ -177,12 +178,15 @@
   function onGutterKey(which: "tree" | "messages", event: KeyboardEvent) {
     if (event.key === "ArrowLeft") {
       event.preventDefault();
+      event.stopPropagation();
       nudgeSplit(which, -2);
     } else if (event.key === "ArrowRight") {
       event.preventDefault();
+      event.stopPropagation();
       nudgeSplit(which, 2);
     } else if (event.key === "Home") {
       event.preventDefault();
+      event.stopPropagation();
       treePct = DEFAULT_TREE_PCT;
       messagesPct = DEFAULT_MESSAGES_PCT;
       persistSplit();
@@ -241,7 +245,9 @@
         : "Only topics whose path contains the filter are shown."
       : emptyKind === "connecting"
         ? "The topic tree will appear here once the broker session is up."
-        : "Messages show up as they arrive. If this stays empty, check the profile subscriptions.",
+        : status === "detached"
+          ? "The tree is frozen. Go live to ingest new messages."
+          : "Messages show up as they arrive. If this stays empty, check the profile subscriptions.",
   );
 
   function sameSession(payloadEpoch?: number, payloadProfile?: string | null) {
@@ -254,8 +260,12 @@
     return true;
   }
 
-  function isNotFound(err: unknown): boolean {
-    return /not found/i.test(errorMessage(err));
+  function isTopicNotFound(err: unknown): boolean {
+    return /^topic .+ not found$/i.test(errorMessage(err));
+  }
+
+  function isMessageNotFound(err: unknown): boolean {
+    return /^message .+ not found on /i.test(errorMessage(err));
   }
 
   function mutate(fn: (model: TreeModel) => void) {
@@ -276,9 +286,14 @@
     const cleared = current
       ? batch.upserts.some((node) => node.path === current && !node.hasPayload)
       : false;
+    const selectedUpserted = current
+      ? batch.upserts.some((node) => node.path === current && node.hasPayload)
+      : false;
     mutate((model) => applyBatch(model, batch.upserts, batch.deletes));
     if ((gone || cleared) && selected) {
       void clearSelection();
+    } else if (selectedUpserted && historyIndex != null) {
+      void refreshSelectedHistory();
     }
   }
 
@@ -323,7 +338,7 @@
   }
 
   function onBatch(batch: TreeBatch) {
-    if (!sameSession(batch.epoch, batch.profileId)) {
+    if (status === "detached" || !sameSession(batch.epoch, batch.profileId)) {
       return;
     }
     if (loading.size > 0) {
@@ -363,6 +378,13 @@
     }
   }
 
+  function focusMessageList() {
+    if (isTypingTarget(document.activeElement)) {
+      return;
+    }
+    messageListEl?.focus({ preventScroll: true });
+  }
+
   async function select(path: string) {
     const node = tree.nodes.get(path);
     if (!node?.hasPayload) {
@@ -371,8 +393,14 @@
     const token = ++seq;
     liveStamp = 0;
     selected = path;
+    pane = "messages";
     clearInspector();
     error = null;
+    void tick().then(() => {
+      if (token === seq) {
+        focusMessageList();
+      }
+    });
     try {
       await selectTopic(path);
       if (token !== seq) {
@@ -402,7 +430,7 @@
       if (token !== seq) {
         return;
       }
-      if (isNotFound(err)) {
+      if (isTopicNotFound(err)) {
         void clearSelection();
         return;
       }
@@ -456,7 +484,7 @@
     };
   }
 
-  async function openHistory(index: number) {
+  async function openHistory(index: number, recovered = false) {
     if (!selected) {
       return;
     }
@@ -473,7 +501,13 @@
       if (token !== seq || selected !== topic) {
         return;
       }
-      if (isNotFound(err)) {
+      if (isMessageNotFound(err)) {
+        if (!recovered) {
+          void refreshSelectedHistory();
+        }
+        return;
+      }
+      if (isTopicNotFound(err)) {
         void clearSelection();
         return;
       }
@@ -481,18 +515,77 @@
     }
   }
 
-  function stepHistory(delta: number) {
-    if (meta == null || historyIndex == null) {
+  async function refreshSelectedHistory() {
+    if (!selected || historyIndex == null) {
       return;
     }
-    const next = Math.min(meta.count - 1, Math.max(0, historyIndex + delta));
+    const topic = selected;
+    const token = seq;
+    try {
+      const [nextMeta, nextHistory] = await Promise.all([
+        getHistoryMeta(topic),
+        listHistory(topic),
+      ]);
+      if (token !== seq || selected !== topic) {
+        return;
+      }
+      meta = nextMeta;
+      history = nextHistory;
+      const clamped = clampHistoryIndex(nextHistory, nextMeta.latestIndex, historyIndex);
+      if (clamped !== historyIndex) {
+        historyIndex = clamped;
+        void openHistory(clamped, true);
+      }
+    } catch (err) {
+      if (token !== seq || selected !== topic) {
+        return;
+      }
+      if (isTopicNotFound(err)) {
+        void clearSelection();
+        return;
+      }
+      error = errorMessage(err);
+    }
+  }
+
+  function clampHistoryIndex(
+    items: HistoryItem[],
+    latestIndex: number,
+    current: number | null,
+  ): number {
+    if (current != null && items.some((item) => item.index === current)) {
+      return current;
+    }
+    return items[0]?.index ?? latestIndex;
+  }
+
+  function stepHistory(delta: number) {
+    if (historyIndex == null || history.length === 0) {
+      return;
+    }
+    const pos = history.findIndex((item) => item.index === historyIndex);
+    if (pos < 0) {
+      return;
+    }
+    const next = Math.min(history.length - 1, Math.max(0, pos + delta));
+    const nextIndex = history[next]?.index;
+    if (nextIndex != null && nextIndex !== historyIndex) {
+      void openHistory(nextIndex);
+    }
+  }
+
+  function jumpHistory(index: number) {
+    if (meta == null) {
+      return;
+    }
+    const next = Math.min(meta.count - 1, Math.max(0, index));
     if (next !== historyIndex) {
       void openHistory(next);
     }
   }
 
   async function onTopicMessage(payload: MessageDto) {
-    if (!sameSession(payload.epoch)) {
+    if (status === "detached" || !sameSession(payload.epoch)) {
       return;
     }
     if (payload.topic !== selected) {
@@ -514,12 +607,18 @@
       if (follow) {
         message = payload;
         historyIndex = nextMeta.latestIndex;
+      } else {
+        const clamped = clampHistoryIndex(nextHistory, nextMeta.latestIndex, historyIndex);
+        if (clamped !== historyIndex) {
+          historyIndex = clamped;
+          void openHistory(clamped);
+        }
       }
     } catch (err) {
       if (token !== seq || stamp !== liveStamp) {
         return;
       }
-      if (isNotFound(err)) {
+      if (isTopicNotFound(err)) {
         void clearSelection();
         return;
       }
@@ -573,12 +672,28 @@
     } else if (event.key === "l") {
       event.preventDefault();
       stepHistory(1);
-    } else if (pane !== "tree" && (event.key === "ArrowDown" || event.key === "j")) {
+    } else if (pane === "tree") {
+      return;
+    } else if (event.key === "ArrowDown" || event.key === "j") {
       event.preventDefault();
       stepHistory(-1);
-    } else if (pane !== "tree" && (event.key === "ArrowUp" || event.key === "k")) {
+    } else if (event.key === "ArrowUp" || event.key === "k") {
       event.preventDefault();
       stepHistory(1);
+    } else if (pane === "messages" && event.key === "Home") {
+      event.preventDefault();
+      if (meta != null) {
+        jumpHistory(meta.latestIndex);
+      }
+    } else if (pane === "messages" && event.key === "End") {
+      event.preventDefault();
+      jumpHistory(0);
+    } else if (pane === "messages" && event.key === "PageUp") {
+      event.preventDefault();
+      stepHistory(listPageSize(messageListEl));
+    } else if (pane === "messages" && event.key === "PageDown") {
+      event.preventDefault();
+      stepHistory(-listPageSize(messageListEl));
     }
   }
 
@@ -658,7 +773,7 @@
 
 </script>
 
-<div class="explorer">
+<div class="explorer" data-status={status}>
   {#if error}
     <p class="banner" role="alert">{error}</p>
   {/if}
@@ -696,6 +811,7 @@
         topic={selected}
         items={history}
         selectedIndex={historyIndex}
+        bind:listEl={messageListEl}
         onselectindex={(index) => void openHistory(index)}
         onfocuspane={() => (pane = "messages")}
       />

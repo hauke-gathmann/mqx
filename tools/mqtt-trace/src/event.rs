@@ -55,6 +55,13 @@ pub fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// Header objects have top-level `kind`; mqtt-trace events do not.
+pub fn is_recording_header(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line.trim())
+        .ok()
+        .is_some_and(|value| value.get("kind").is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,5 +80,15 @@ mod tests {
         let parsed = TraceEvent::from_jsonl(&line).unwrap();
         assert_eq!(parsed, event);
         assert_eq!(parsed.payload_bytes().unwrap(), vec![0, 1, 2, 255]);
+    }
+
+    #[test]
+    fn detects_in_app_header_by_kind() {
+        assert!(is_recording_header(
+            r#"{"kind":"mqx-recording","v":1,"startedAt":"2026-08-26T12:00:00.000Z"}"#
+        ));
+        assert!(!is_recording_header(
+            r#"{"t_ms":1,"topic":"home/lamp","qos":0,"retain":false,"payload":""}"#
+        ));
     }
 }

@@ -294,17 +294,51 @@ export function duplicateName(name: string): string {
 export type SessionStatusKind =
   | "connecting"
   | "connected"
+  | "detached"
   | "reconnecting"
   | "disconnected"
   | "error";
 
+export function sessionOpen(status: SessionStatusKind): boolean {
+  return (
+    status === "connecting" ||
+    status === "connected" ||
+    status === "reconnecting" ||
+    status === "detached"
+  );
+}
+
+export function statusLabel(status: SessionStatusKind): string {
+  switch (status) {
+    case "connected":
+      return "Live";
+    case "detached":
+      return "Detached";
+    default:
+      return status;
+  }
+}
+
 export type SessionStatus = {
   profileId: string | null;
   epoch?: number;
+  rev?: number;
   status: SessionStatusKind;
+  ingestEnabled?: boolean;
   error?: string;
   broker: string;
+  ramExhausted?: boolean;
 };
+
+export function isStaleSessionStatus(current: SessionStatus, incoming: SessionStatus): boolean {
+  if (incoming.epoch !== current.epoch) {
+    return false;
+  }
+  if (incoming.rev == null || current.rev == null) {
+    return false;
+  }
+  return incoming.rev < current.rev;
+}
 
 export type SessionStats = {
   profileId?: string;
@@ -312,6 +346,8 @@ export type SessionStats = {
   topics: number;
   messagesTotal: number;
   messagesPerSec: number;
+  storedBytes?: number;
+  ramLimitBytes?: number;
 };
 
 export type PayloadFormat = "json" | "text" | "binary";
@@ -383,14 +419,171 @@ export type HistoryItem = {
 
 export type UiSettings = {
   theme: "dark" | "light" | "system";
+  ramLimitBytes: number;
+  recordDirectory: string;
+};
+
+export const DEFAULT_RAM_LIMIT_BYTES = 12 * 1024 * 1024 * 1024;
+export const RAM_LIMIT_MIN_GB = 4;
+export const RAM_LIMIT_MAX_GB = 128;
+const GIB = 1024 * 1024 * 1024;
+
+export type RecordStatus = {
+  epoch?: number;
+  active: boolean;
+  startedMs: number;
+  endedMs?: number;
+  messages: number;
+  bytes: number;
+  dropped: number;
+  topics: number;
+  path?: string;
+};
+
+export type StoppedRecording = {
+  tempPath: string;
+  messages: number;
+  topics: number;
+  startedMs: number;
+  endedMs: number;
+  dropped?: number;
+  bytes?: number;
+};
+
+export type RecordingFile = {
+  name: string;
+  path: string;
+};
+
+export function formatCount(value: number): string {
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(1)}M`;
+  }
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(1)}k`;
+  }
+  return String(value);
+}
+
+export function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (hours > 0) {
+    return `${hours}:${pad(minutes)}:${pad(seconds)}`;
+  }
+  return `${pad(minutes)}:${pad(seconds)}`;
+}
+
+export function suggestedRecordingName(broker: string, startedMs: number): string {
+  const host = hostSlug(broker);
+  const date = new Date(startedMs);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const ms = String(date.getMilliseconds()).padStart(3, "0");
+  const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}-${ms}`;
+  return `${host}-${stamp}.jsonl`;
+}
+
+function hostSlug(broker: string): string {
+  let host = broker;
+  try {
+    host = new URL(broker).hostname || broker;
+  } catch {
+    host = broker;
+  }
+  return host.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "mqtt";
+}
+
+export type AppTab = "connections" | "explorer" | "playback";
+
+export type PlaybackState = "playing" | "stopped" | "ended";
+
+export type PlaybackProgress = {
+  file: string;
+  index: number;
+  total: number;
+  tMs: number;
+  tEndMs: number;
+  state: PlaybackState;
+  epoch?: number;
+  generation?: number;
+};
+
+export type ReplayReply = {
+  status: string;
+  epoch: number;
+  generation: number;
+  file: string;
+  total: number;
+  tMs: number;
+  tEndMs: number;
+};
+
+export type RecordingInfo = {
+  path: string;
+  name: string;
+  fileName: string;
+  startedAt?: string;
+  firstTMs?: number;
+  lastTMs?: number;
+  messages: number;
+  topics: number;
+  bytes: number;
+  mtimeMs: number;
+};
+
+export type RecordingsList = {
+  directory: string;
+  recordings: RecordingInfo[];
 };
 
 export function idleSessionStatus(): SessionStatus {
   return {
     profileId: null,
     epoch: 0,
+    rev: 0,
     status: "disconnected",
+    ingestEnabled: false,
     broker: "",
+  };
+}
+
+export function formatClock(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) {
+    ms = 0;
+  }
+  const total = Math.floor(ms / 1000);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+export function formatRecordingTime(recording: RecordingInfo): string {
+  if (recording.startedAt) {
+    const parsed = Date.parse(recording.startedAt);
+    if (!Number.isNaN(parsed)) {
+      return new Date(parsed).toLocaleString();
+    }
+    return recording.startedAt;
+  }
+  if (recording.firstTMs != null) {
+    return new Date(recording.firstTMs).toLocaleString();
+  }
+  return "—";
+}
+
+export function playbackSpanMs(progress: PlaybackProgress, t0Ms: number | null): {
+  elapsed: number;
+  duration: number;
+} {
+  if (t0Ms == null) {
+    return { elapsed: 0, duration: Math.max(0, progress.tEndMs - progress.tMs) };
+  }
+  return {
+    elapsed: Math.max(0, progress.tMs - t0Ms),
+    duration: Math.max(0, progress.tEndMs - t0Ms),
   };
 }
 
@@ -399,6 +592,25 @@ export function formatRate(messagesPerSec: number): string {
     return `${(messagesPerSec / 1000).toFixed(1)}k/s`;
   }
   return `${messagesPerSec.toFixed(messagesPerSec >= 10 ? 0 : 1)}/s`;
+}
+
+function formatGib(bytes: number): string {
+  const gb = bytes / GIB;
+  if (Math.abs(gb - Math.round(gb)) < 1e-9) {
+    return String(Math.round(gb));
+  }
+  return gb >= 10 ? gb.toFixed(0) : gb.toFixed(1);
+}
+
+export function formatStoreUsage(storedBytes: number, limitBytes: number): string | null {
+  if (!(limitBytes > 0) || storedBytes * 2 < limitBytes) {
+    return null;
+  }
+  return `${formatGib(storedBytes)} / ${formatGib(limitBytes)} GB`;
+}
+
+export function ramLimitGb(bytes: number): number {
+  return Math.round(bytes / GIB);
 }
 
 export function errorMessage(err: unknown): string {

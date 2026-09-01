@@ -4,6 +4,28 @@ mqx is a desktop MQTT explorer. Connect to a broker, watch the topic tree fill i
 
 One window is one broker. Saved profiles remember host, protocol, subscriptions, and TLS. JSON payloads pretty-print in place; jq filters and fuzzy topic search sit next to the tree. Passwords go in the OS keychain (or a private file when no keychain is available).
 
+## Install
+
+**macOS / Linux**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hauke-gathmann/mqx/main/install.sh | sh
+```
+
+macOS copies `mqx.app` into `/Applications`. Linux x86_64 drops an AppImage at `~/.local/bin/mqx`.
+
+**Windows**
+
+Download the installer from the [latest GitHub Release](https://github.com/hauke-gathmann/mqx/releases/latest). Prefer `mqx_*_x64-setup.exe` (NSIS, no admin). An MSI (`mqx_*_x64_en-US.msi`) is on the same page if you need it.
+
+The first builds are unsigned. macOS: right-click the app → Open. Windows: SmartScreen may warn; choose Run anyway. Linux aarch64 is not built yet.
+
+**Live / Detached.** Detach freezes the tree while MQTT stays connected; Go live resumes ingest. Recording continues while Detached.
+
+**Topic history limit.** Settings has a RAM slider (4–128 GB, default 12 GB). Older extra messages drop first; each topic keeps at least its latest payload. That cap is the in-memory topic store, not the whole process.
+
+**Record and replay.** While connected, Record writes mqtt-trace JSONL (raw payloads). The Playback tab lists captures and publishes them onto a broker, **including retain flags** — that can change retained state on the target. Replay does not flip Live / Detached; stay Live to watch the tree, or Detached to dump traffic without moving it.
+
 ## Develop
 
 Requires [Rust stable](https://rustup.rs/) and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform.
@@ -37,13 +59,15 @@ cargo run -p mqtt-trace -- replay traffic.jsonl --broker mqtt://127.0.0.1:1883
 
 Subscribe defaults to `#`. Add `--sys` to include `$SYS/#`. Replay `--speed 1` is real time; `--speed 0` is as fast as possible; `--loop` repeats the trace.
 
+CLI replay of an in-app recording is the same thing as the Playback tab: a traffic dump onto the broker, not a private in-memory view. In-app files start with a header line; `mqtt-trace replay` skips it. Retained publishes in the file are sent as retained.
+
 Profiles are stored under the `mqx` application directory. Theme is stored in `config.toml` (`[ui] theme = "dark" | "light" | "system"`).
 
-Native menus: **mqx**, **Connections**, **Edit**, **View**, **Help**. `Cmd/Ctrl+,` opens settings. `Cmd/Ctrl+K` focuses topic search.
+Native menus: **mqx**, **Connections**, **Edit**, **View**, **Help**. `Cmd/Ctrl+,` opens settings. `Cmd/Ctrl+K` focuses topic search. `Cmd/Ctrl+Shift+R` toggles recording. Connections has Detach / Go Live / Start/Stop Recording. View switches Explorer and Playback. ↑/↓ steps message history.
 
 ## Releases
 
-Push a `v*` tag to run [`.github/workflows/release.yml`](.github/workflows/release.yml). The workflow builds `aarch64-apple-darwin` and `x86_64-apple-darwin` on `macos-latest`, plus `windows-latest` and `ubuntu-22.04`, with [`tauri-apps/tauri-action`](https://github.com/tauri-apps/tauri-action) and opens a **draft** GitHub Release.
+Push a `v*` tag to run [`.github/workflows/release.yml`](.github/workflows/release.yml). The workflow builds `aarch64-apple-darwin` and `x86_64-apple-darwin` on `macos-latest`, plus `windows-latest` and `ubuntu-22.04`, with [`tauri-apps/tauri-action`](https://github.com/tauri-apps/tauri-action) and opens a **draft** GitHub Release. **Publish** that draft so `releases/latest` and `install.sh` work.
 
 Unsigned artifacts are acceptable until signing certificates exist. macOS/Windows “easy download” (no Gatekeeper/SmartScreen warning) needs the secrets below.
 

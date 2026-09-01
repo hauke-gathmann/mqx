@@ -19,6 +19,7 @@ use tracing::{debug, warn};
 use super::{
     Session, Status, Sub,
     dto::{SessionStats, SessionStatus, TreeBatch, TreeNodeDto},
+    replay::PlaybackProgress,
     tls::{mqtt_options, qos_from_rumqttc},
 };
 use crate::{
@@ -43,6 +44,8 @@ pub enum SessionEvent {
     Stats(SessionStats),
     TreeBatch(TreeBatch),
     TopicMessage(MessageDto),
+    Record(crate::RecordStatus),
+    Playback(PlaybackProgress),
 }
 
 impl SessionEvent {
@@ -52,6 +55,8 @@ impl SessionEvent {
             Self::Stats(payload) => payload.epoch,
             Self::TreeBatch(payload) => payload.epoch,
             Self::TopicMessage(payload) => payload.epoch,
+            Self::Record(payload) => payload.epoch,
+            Self::Playback(payload) => payload.epoch,
         }
     }
 }
@@ -62,6 +67,7 @@ pub struct LiveHandle {
     client: AsyncClient,
     task: Mutex<Option<JoinHandle<()>>>,
     epoch: u64,
+    events: mpsc::UnboundedSender<SessionEvent>,
 }
 
 impl LiveHandle {
@@ -74,7 +80,7 @@ impl LiveHandle {
         let request_cap = profile.subscriptions.len().saturating_add(16).max(64);
         let (client, eventloop) = AsyncClient::new(options, request_cap);
         let epoch = NEXT_EPOCH.fetch_add(1, Ordering::Relaxed);
-        let session = Session::new(&profile, client.clone(), ui, epoch);
+        let mut session = Session::new(&profile, client.clone(), ui, epoch);
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let _ = event_tx.send(SessionEvent::Status(session.status_event()));
 
@@ -99,7 +105,7 @@ impl LiveHandle {
             Arc::clone(&session),
             client.clone(),
             eventloop,
-            event_tx,
+            event_tx.clone(),
             shutdown_rx,
             raw_tx,
             decoded_rx,
@@ -112,6 +118,7 @@ impl LiveHandle {
             client,
             task: Mutex::new(Some(task)),
             epoch,
+            events: event_tx,
         };
 
         Ok((handle, event_rx))
@@ -121,8 +128,109 @@ impl LiveHandle {
         self.epoch
     }
 
+    pub fn client(&self) -> AsyncClient {
+        self.client.clone()
+    }
+
+    pub fn events(&self) -> mpsc::UnboundedSender<SessionEvent> {
+        self.events.clone()
+    }
+
     pub fn session(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Session>> {
         self.session.lock()
+    }
+
+    pub fn set_ingest(&self, enabled: bool) -> std::result::Result<SessionStatus, String> {
+        let status = {
+            let mut session = self
+                .session()
+                .map_err(|_| "session lock poisoned".to_string())?;
+            session.set_ingest(enabled);
+            session.status_event()
+        };
+        let _ = self.events.send(SessionEvent::Status(status.clone()));
+        Ok(status)
+    }
+
+    pub fn start_recording(
+        &self,
+        directory: std::path::PathBuf,
+    ) -> std::result::Result<crate::RecordStatus, String> {
+        let status = {
+            let mut session = self
+                .session()
+                .map_err(|_| "session lock poisoned".to_string())?;
+            session
+                .start_recording(directory)
+                .map_err(|error| error.to_string())?
+        };
+        let _ = self.events.send(SessionEvent::Record(status.clone()));
+        Ok(status)
+    }
+
+    pub fn take_recorder(
+        &self,
+    ) -> std::result::Result<Option<(crate::Recorder, super::RecordingContext)>, String> {
+        let mut session = self
+            .session()
+            .map_err(|_| "session lock poisoned".to_string())?;
+        Ok(session
+            .take_recorder()
+            .map(|recorder| (recorder, session.recording_context())))
+    }
+
+    pub fn take_stopped_recording(
+        &self,
+    ) -> std::result::Result<Option<(crate::StoppedRecording, super::RecordingContext)>, String>
+    {
+        let mut session = self
+            .session()
+            .map_err(|_| "session lock poisoned".to_string())?;
+        Ok(session
+            .take_stopped_recording()
+            .map(|stopped| (stopped, session.recording_context())))
+    }
+
+    pub fn clone_stopped_matching(
+        &self,
+        temp_path: &std::path::Path,
+    ) -> std::result::Result<Option<(crate::StoppedRecording, super::RecordingContext)>, String>
+    {
+        let session = self
+            .session()
+            .map_err(|_| "session lock poisoned".to_string())?;
+        match session.stopped_recording() {
+            Some(stopped) if stopped.temp_path.as_path() == temp_path => {
+                Ok(Some((stopped.clone(), session.recording_context())))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn take_stopped_matching(
+        &self,
+        temp_path: &std::path::Path,
+    ) -> std::result::Result<Option<crate::StoppedRecording>, String> {
+        let mut session = self
+            .session()
+            .map_err(|_| "session lock poisoned".to_string())?;
+        match session.stopped_recording() {
+            Some(stopped) if stopped.temp_path.as_path() == temp_path => {
+                Ok(session.take_stopped_recording())
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn has_unsaved_recording(&self) -> std::result::Result<bool, String> {
+        let session = self
+            .session()
+            .map_err(|_| "session lock poisoned".to_string())?;
+        Ok(session.has_unsaved_recording())
+    }
+
+    pub fn emit_record(&self, status: crate::RecordStatus) {
+        let _ = self.events.send(SessionEvent::Record(status));
     }
 
     pub async fn stop(self) {
@@ -133,6 +241,44 @@ impl LiveHandle {
             let _ = task.await;
         }
     }
+
+    /// Take the recorder off the session, join the writer without the mutex, then stop the loop.
+    pub async fn stop_with_recording(
+        self,
+    ) -> std::result::Result<Option<(crate::StoppedRecording, super::RecordingContext)>, String>
+    {
+        let session = Arc::clone(&self.session);
+        let taken = {
+            let mut guard = session
+                .lock()
+                .map_err(|_| "session lock poisoned".to_string())?;
+            guard
+                .take_recorder()
+                .map(|recorder| (recorder, guard.recording_context()))
+        };
+        let stopped = match taken {
+            Some((recorder, ctx)) => {
+                Some((recorder.stop().map_err(|error| error.to_string())?, ctx))
+            }
+            None => None,
+        };
+        self.stop().await;
+        if let Some(stopped) = stopped {
+            return Ok(keep_existing_temp(stopped));
+        }
+        let mut guard = session
+            .lock()
+            .map_err(|_| "session lock poisoned".to_string())?;
+        Ok(guard
+            .take_stopped_recording()
+            .and_then(|stopped| keep_existing_temp((stopped, guard.recording_context()))))
+    }
+}
+
+fn keep_existing_temp(
+    stopped: (crate::StoppedRecording, super::RecordingContext),
+) -> Option<(crate::StoppedRecording, super::RecordingContext)> {
+    stopped.0.temp_path.exists().then_some(stopped)
 }
 
 impl Drop for LiveHandle {
@@ -187,13 +333,15 @@ async fn run_live(
                 match event {
                     Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                         backoff = BACKOFF_START;
-                        let subs = {
+                        let (subs, status) = {
                             let mut guard = lock(&session);
-                            guard.set_status(Status::Connected);
-                            guard.subscriptions().to_vec()
+                            guard.on_connack();
+                            let subs = guard.subscriptions().to_vec();
+                            let status = guard.status_event();
+                            (subs, status)
                         };
                         pending_subs = subs.into();
-                        emit_status(&session, &event_tx);
+                        let _ = event_tx.send(SessionEvent::Status(status));
                     }
                     Ok(Event::Incoming(Incoming::Publish(publish))) => {
                         let inbound = Inbound {
@@ -201,14 +349,27 @@ async fn run_live(
                             payload: publish.payload,
                             retain: publish.retain,
                             qos: qos_from_rumqttc(publish.qos),
+                            dup: publish.dup,
                             timestamp: SystemTime::now(),
                         };
-                        match raw_tx.try_send(inbound) {
-                            Ok(()) => {}
-                            Err(TrySendError::Full(_)) => {
-                                debug!("dropping inbound; decode queue full");
+                        let disconnected = {
+                            let guard = lock(&session);
+                            guard.try_record(&inbound);
+                            if !guard.ingest_enabled {
+                                false
+                            } else {
+                                match raw_tx.try_send(inbound) {
+                                    Ok(()) => false,
+                                    Err(TrySendError::Full(_)) => {
+                                        debug!("dropping inbound; decode queue full");
+                                        false
+                                    }
+                                    Err(TrySendError::Disconnected(_)) => true,
+                                }
                             }
-                            Err(TrySendError::Disconnected(_)) => break,
+                        };
+                        if disconnected {
+                            break;
                         }
                     }
                     Ok(_) => {}
@@ -249,10 +410,20 @@ async fn run_live(
             }
             Some(message) = decoded_rx.recv() => {
                 window_count = window_count.saturating_add(1);
-                let applied = {
+                let (applied, status) = {
                     let mut guard = lock(&session);
-                    guard.ingest(message)
+                    let before = guard.ram_exhausted();
+                    let applied = guard.ingest(message);
+                    let status = if guard.ram_exhausted() != before {
+                        Some(guard.status_event())
+                    } else {
+                        None
+                    };
+                    (applied, status)
                 };
+                if let Some(status) = status {
+                    let _ = event_tx.send(SessionEvent::Status(status));
+                }
                 if let Some(dto) = applied.topic_message {
                     let _ = event_tx.send(SessionEvent::TopicMessage(dto));
                 }
@@ -269,11 +440,14 @@ async fn run_live(
             _ = stats_tick.tick() => {
                 let rate = window_count as f64;
                 window_count = 0;
-                let stats = {
-                    let guard = lock(&session);
-                    guard.stats(rate)
+                let (stats, record) = {
+                    let mut guard = lock(&session);
+                    (guard.stats(rate), guard.record_status())
                 };
                 let _ = event_tx.send(SessionEvent::Stats(stats));
+                if let Some(status) = record {
+                    let _ = event_tx.send(SessionEvent::Record(status));
+                }
             }
         }
     }
@@ -282,6 +456,22 @@ async fn run_live(
     decoded_rx.close();
     while decoded_rx.try_recv().is_ok() {}
     let _ = decode.join();
+
+    let recorder = {
+        let mut guard = lock(&session);
+        guard.take_recorder()
+    };
+    if let Some(recorder) = recorder {
+        match recorder.stop() {
+            Ok(stopped) => {
+                let _ = event_tx.send(SessionEvent::Record(stopped.status(epoch)));
+                lock(&session).set_stopped_recording(stopped);
+            }
+            Err(error) => {
+                warn!(%error, "failed to flush recorder on session exit");
+            }
+        }
+    }
 
     {
         let mut guard = lock(&session);

@@ -11,6 +11,7 @@ use crate::message::{Format, Freshness, Message};
 pub enum StatusKind {
     Connecting,
     Connected,
+    Detached,
     Reconnecting,
     Disconnected,
     Error,
@@ -22,10 +23,16 @@ pub struct SessionStatus {
     pub profile_id: Option<String>,
     #[serde(default)]
     pub epoch: u64,
+    /// Monotonic per session; UI ignores a lower rev for the same epoch.
+    #[serde(default)]
+    pub rev: u64,
     pub status: StatusKind,
+    pub ingest_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub broker: String,
+    #[serde(default)]
+    pub ram_exhausted: bool,
 }
 
 impl SessionStatus {
@@ -33,9 +40,12 @@ impl SessionStatus {
         Self {
             profile_id: None,
             epoch: 0,
+            rev: 0,
             status: StatusKind::Disconnected,
+            ingest_enabled: false,
             error: None,
             broker: String::new(),
+            ram_exhausted: false,
         }
     }
 }
@@ -49,6 +59,10 @@ pub struct SessionStats {
     pub topics: u64,
     pub messages_total: u64,
     pub messages_per_sec: f64,
+    #[serde(default)]
+    pub stored_bytes: u64,
+    #[serde(default)]
+    pub ram_limit_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -113,9 +127,9 @@ pub struct HistoryItemDto {
 }
 
 impl HistoryItemDto {
-    pub fn from_message(index: usize, message: &Message) -> Self {
+    pub fn from_message(message: &Message) -> Self {
         Self {
-            index,
+            index: message.seq as usize,
             timestamp: system_time_ms(message.inbound.timestamp),
             format: message.format,
             retain: message.inbound.retain,
@@ -255,6 +269,7 @@ mod tests {
             payload: Bytes::from_static(br#"{"on":true}"#),
             retain: true,
             qos: QoS::AtLeastOnce,
+            dup: false,
             timestamp: UNIX_EPOCH,
         });
         let dto = MessageDto::from_message(&message);
@@ -268,12 +283,21 @@ mod tests {
     }
 
     #[test]
+    fn status_kind_detached_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&StatusKind::Detached).unwrap(),
+            "\"detached\""
+        );
+    }
+
+    #[test]
     fn message_dto_text_has_no_error() {
         let message = decode_inbound(Inbound {
             topic: "t".into(),
             payload: Bytes::from_static(b"hello"),
             retain: false,
             qos: QoS::AtMostOnce,
+            dup: false,
             timestamp: UNIX_EPOCH,
         });
         let dto = MessageDto::from_message(&message);

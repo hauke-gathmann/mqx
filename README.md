@@ -20,11 +20,23 @@ Download the installer from the [latest GitHub Release](https://github.com/hauke
 
 The first builds are unsigned. macOS: right-click the app → Open. Windows: SmartScreen may warn; choose Run anyway. Linux aarch64 is not built yet.
 
-**Live / Detached.** Detach freezes the tree while MQTT stays connected; Go live resumes ingest. Recording continues while Detached.
+## Explorer
+
+The topic tree fills in as publishes arrive. Search filters paths; pick a topic to scroll its history and inspect the payload. JSON pretty-prints in place, with jq on the same pane.
+
+![Explorer](docs/images/explorer.png)
+
+## Playback
+
+While connected, Record writes mqtt-trace JSONL (raw payloads). The Playback tab lists captures and publishes them onto a broker, **including retain flags** — that can change retained state on the target.
+
+![Playback](docs/images/playback.png)
+
+**Live / Detached.** Detach freezes the **view**; Go live applies traffic received in the meantime, still under the RAM cap. Recording continues while Detached.
 
 **Topic history limit.** Settings has a RAM slider (4–128 GB, default 12 GB). Older extra messages drop first; each topic keeps at least its latest payload. That cap is the in-memory topic store, not the whole process.
 
-**Record and replay.** While connected, Record writes mqtt-trace JSONL (raw payloads). The Playback tab lists captures and publishes them onto a broker, **including retain flags** — that can change retained state on the target. Replay does not flip Live / Detached; stay Live to watch the tree, or Detached to dump traffic without moving it.
+**Record and replay.** Replay does not flip Live / Detached; stay Live to watch the tree, or Detached to dump traffic without moving it.
 
 ## Develop
 

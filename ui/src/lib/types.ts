@@ -483,7 +483,13 @@ export function suggestedRecordingName(broker: string, startedMs: number): strin
   const pad = (n: number) => String(n).padStart(2, "0");
   const ms = String(date.getMilliseconds()).padStart(3, "0");
   const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}-${ms}`;
-  return `${host}-${stamp}.jsonl`;
+  return `${host}-${stamp}`;
+}
+
+/** User-facing recording title. `.jsonl` stays on disk only. */
+export function recordingLabel(name: string): string {
+  const stripped = name.replace(/\.jsonl$/i, "");
+  return stripped || name;
 }
 
 function hostSlug(broker: string): string {

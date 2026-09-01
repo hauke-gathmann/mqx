@@ -177,6 +177,11 @@ pub fn get_settings(state: State<AppState>) -> Result<UiSettings, String> {
     ui_settings(&config)
 }
 
+#[tauri::command(rename = "checkForUpdates")]
+pub async fn check_for_updates(app: AppHandle) {
+    crate::updater::check_and_prompt(app).await;
+}
+
 #[tauri::command(rename = "setTheme")]
 pub fn set_theme(state: State<AppState>, theme: String) -> Result<UiSettings, String> {
     persist_theme(&state, &theme)?;

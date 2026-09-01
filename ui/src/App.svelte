@@ -693,6 +693,9 @@
           if (wantedEpoch != null && payload.epoch !== wantedEpoch) {
             return;
           }
+          if (sessionStatus.status === "detached") {
+            return;
+          }
           stats = payload;
         });
         const themeUnlisten = await listen<string>("settings/theme", (event) => {

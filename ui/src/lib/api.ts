@@ -107,6 +107,10 @@ export function getSettings(): Promise<UiSettings> {
   return invoke<UiSettings>("getSettings");
 }
 
+export function checkForUpdates(): Promise<void> {
+  return invoke<void>("checkForUpdates");
+}
+
 export function setTheme(theme: Theme): Promise<UiSettings> {
   return invoke<UiSettings>("setTheme", { theme });
 }

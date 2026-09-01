@@ -87,6 +87,7 @@ pub fn run() {
             commands::apply_jq,
             commands::jq_history,
             commands::get_settings,
+            commands::check_for_updates,
             commands::set_theme,
             commands::set_ram_limit,
             commands::start_recording,

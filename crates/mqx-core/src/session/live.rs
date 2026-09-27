@@ -628,13 +628,19 @@ mod tests {
     #[tokio::test]
     async fn stop_during_backoff_returns_promptly_and_closes_events() {
         let ui = UiConfig::default();
-        let (handle, mut events) =
-            LiveHandle::spawn(unreachable_profile("old"), None, &ui).unwrap();
+        // Accept and close a real loopback connection. Refusal of an unused port
+        // can be delayed by the Windows firewall and is not what this test measures.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut profile = unreachable_profile("old");
+        profile.port = listener.local_addr().unwrap().port();
+        let broker = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            drop(socket);
+        });
+        let (handle, mut events) = LiveHandle::spawn(profile, None, &ui).unwrap();
         let first_epoch = handle.epoch();
 
-        // Windows may take several seconds to report a refused TCP connection.
-        // This setup deadline is separate from the prompt-stop assertion below.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(5);
         let mut saw_retry = false;
         while Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_millis(200), events.recv()).await {
@@ -648,7 +654,11 @@ mod tests {
                 Ok(Some(_)) | Ok(None) | Err(_) => {}
             }
         }
-        assert!(saw_retry, "expected reconnect/error after refused broker");
+        assert!(
+            saw_retry,
+            "expected reconnect/error after broker closed the connection"
+        );
+        broker.join().unwrap();
 
         let started = Instant::now();
         handle.stop().await;

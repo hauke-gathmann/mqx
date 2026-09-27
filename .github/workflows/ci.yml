@@ -41,6 +41,8 @@ jobs:
       - name: Install pinned Rust
         run: rustup show active-toolchain
       - uses: swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - run: npm ci
       - run: npm run build
       - run: cargo fmt --all -- --check

@@ -1,3 +1,5 @@
+<img src="src-tauri/icons/128x128@2x.png" alt="mqx icon" width="128" height="128" />
+
 # mqx
 
 mqx is a desktop MQTT explorer. One window is one broker: connect, watch the topic tree fill as messages arrive, inspect payloads, and keep connection profiles (including TLS files) on disk. Passwords go in the OS keychain, or a private file when no keychain is available.

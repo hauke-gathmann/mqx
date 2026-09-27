@@ -39,7 +39,9 @@ On clean user accounts and machines:
 - Run sustained traffic and check memory use. The default history budget is 512 MiB, with a 64 MiB minimum; it estimates the topic store, not total process memory.
 - Test an actual prior-version → candidate update. Confirm signature mismatch/offline failures preserve the app. Confirm active recording, unsaved recording, and active replay postpone updates. Linux DEB/RPM installations should direct users to package updates rather than overwrite themselves with an AppImage.
 
-Mock installer tests run in CI and verify failure recovery and architecture selection. Mac CI also mounts the actual DMG and tests installation, replacement, signatures and removal in a temporary directory. It supplies release downloads locally, so this does not test GitHub delivery or Gatekeeper quarantine. These tests do not replace the complete application checks above.
+Mock installer tests run in CI and verify failure recovery and architecture selection. Mac CI also mounts the actual DMG and tests installation, replacement, signatures and removal in a temporary directory. Linux CI installs and replaces the actual AppImage, requires it to open an X11 window without FUSE, and uninstalls it. These tests supply release downloads locally, so they do not test GitHub delivery or Gatekeeper quarantine. They do not replace the complete application checks above.
+
+Run `python3 scripts/smoke-broker.py` with Mosquitto, its password utility and OpenSSL installed to test the real MQTT core against an isolated TLS broker bound to localhost. It checks custom-CA validation, rejected certificates/passwords, JSON and binary payloads, recording, saving, playback and reconnection. Linux CI runs this automatically. It does not use saved profiles or external brokers.
 
 ## Publish
 

@@ -7,6 +7,11 @@ keydir=${MQX_SIGNING_DIR:-$HOME/.config/mqx-release}
 mkdir -p "$keydir"
 chmod 700 "$keydir"
 if [ ! -f "$keydir/updater.key" ]; then
+  releases=$(gh release list --repo hauke-gathmann/mqx --limit 1 --json tagName --jq length)
+  [ "$releases" = 0 ] || {
+    echo 'A release already exists. Recover the original updater key instead of creating a replacement.' >&2
+    exit 1
+  }
   npm run tauri signer generate -- --ci -p '' -w "$keydir/updater.key" > "$keydir/generation.log" 2>&1
 fi
 chmod 600 "$keydir/updater.key"

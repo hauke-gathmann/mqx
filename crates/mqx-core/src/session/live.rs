@@ -632,7 +632,9 @@ mod tests {
             LiveHandle::spawn(unreachable_profile("old"), None, &ui).unwrap();
         let first_epoch = handle.epoch();
 
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // Windows may take several seconds to report a refused TCP connection.
+        // This setup deadline is separate from the prompt-stop assertion below.
+        let deadline = Instant::now() + Duration::from_secs(10);
         let mut saw_retry = false;
         while Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_millis(200), events.recv()).await {

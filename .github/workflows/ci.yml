@@ -46,6 +46,11 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
+      - name: Test TLS, credentials, recording and replay with a real broker
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y mosquitto mosquitto-clients
+          python3 scripts/smoke-broker.py
       - run: npm run check
       - run: python3 scripts/release.py version
       - name: Installer and release tests
@@ -76,6 +81,11 @@ jobs:
       - name: Test real macOS installation and replacement
         if: runner.os == 'macOS'
         run: python3 scripts/smoke-macos-install.py target/release/bundle/dmg/*.dmg
+      - name: Test real Linux installation and no-FUSE launch
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y xvfb x11-utils dbus-x11
+          python3 scripts/smoke-linux-install.py target/release/bundle/appimage/*.AppImage
       - name: Save installation test packages
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4

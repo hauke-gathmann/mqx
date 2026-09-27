@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_updater::UpdaterExt;
@@ -13,7 +15,11 @@ pub async fn check_and_prompt(app: AppHandle) {
         );
         return;
     }
-    let updater = match app.updater() {
+    let updater = match app
+        .updater_builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+    {
         Ok(updater) => updater,
         Err(error) => {
             show(
@@ -27,7 +33,8 @@ pub async fn check_and_prompt(app: AppHandle) {
     };
 
     match updater.check().await {
-        Ok(Some(update)) => {
+        Ok(Some(mut update)) => {
+            update.timeout = Some(Duration::from_secs(600));
             let notes = update.body.as_deref().unwrap_or("").trim().to_string();
             let body = if notes.is_empty() {
                 format!(
@@ -40,11 +47,7 @@ pub async fn check_and_prompt(app: AppHandle) {
                     update.version
                 )
             };
-            let install = app
-                .dialog()
-                .message(body)
-                .title("Update available")
-                .kind(MessageDialogKind::Info)
+            let install = message_dialog(&app, "Update available", &body, MessageDialogKind::Info)
                 .buttons(MessageDialogButtons::OkCancel)
                 .blocking_show();
             if !install {
@@ -120,11 +123,21 @@ fn activity_blocker(unsaved: bool, replay: bool) -> Option<&'static str> {
 }
 
 fn show(app: &AppHandle, title: &str, message: &str, kind: MessageDialogKind) {
-    app.dialog()
-        .message(message)
-        .title(title)
-        .kind(kind)
-        .blocking_show();
+    message_dialog(app, title, message, kind).blocking_show();
+}
+
+fn message_dialog(
+    app: &AppHandle,
+    title: &str,
+    message: &str,
+    kind: MessageDialogKind,
+) -> tauri_plugin_dialog::MessageDialogBuilder<tauri::Wry> {
+    let dialog = app.dialog().message(message).title(title).kind(kind);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog.parent(&window)
+    } else {
+        dialog
+    }
 }
 
 #[cfg(test)]

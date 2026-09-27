@@ -2,7 +2,14 @@
 
 ## 0.2.0
 
-* RAM slider (4–128 GB, default 12 GB) with oldest-extra eviction; each topic keeps its latest message
+* Verified curl installation, recoverable Mac replacement, and Linux desktop integration
+* Ad-hoc macOS signing without an Apple Developer ID; separately signed in-app updates
+* Release validation, explicit native packages, checksums, and bundled dependency notices
+* Linux Secret Service credential storage, private diagnostic logs, and webview CSP
+* Updates postpone installation while recordings or playback are active
+* Default history budget reduced to 512 MiB; minimum reduced to 64 MiB
+
+* RAM slider (64 MiB–128 GiB, default 512 MiB) with oldest-extra eviction; each topic keeps its latest message
 * Live / Detached: freeze the topic tree view without disconnecting the broker
 * Go live applies traffic received while Detached (under the RAM cap)
 * Check for Updates in Settings

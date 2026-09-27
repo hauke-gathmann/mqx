@@ -230,7 +230,7 @@ impl JqHistory {
     }
 
     pub fn stage(&mut self, prompt: &str) {
-        tracing::debug!(prompt = prompt, "stage");
+        tracing::debug!("stage jq filter");
         self.staging = prompt.into();
     }
 
@@ -240,7 +240,7 @@ impl JqHistory {
         }
         let commit = self.staging.clone();
         let topic = topic.split('/').next_back().unwrap_or(topic);
-        info!(commit = commit, topic = topic, "History::commit");
+        info!("commit jq history");
         let item = Item::new(topic, &commit);
         if !self.committed.shift_insert(0, item.clone()) {
             return;
@@ -252,7 +252,7 @@ impl JqHistory {
             .map_err(Error::from)
             .and_then(|mut file| writeln!(file, "{item}").map_err(Error::from));
         if let Err(e) = result {
-            warn!(prompt = commit, "{e}");
+            warn!(error = %e, "could not save jq history");
         }
     }
 
@@ -278,17 +278,12 @@ impl JqHistory {
             return None;
         }
         if index == 0 {
-            info!(index = index, prompt = self.staging, "History::lookup");
+            info!(index, "lookup jq history");
             return Some(self.staging.clone());
         }
 
         let commit = self.matching(topic).nth(index - 1)?.filter.as_str();
-        info!(
-            index = index,
-            topic = topic,
-            prompt = commit,
-            "History::lookup"
-        );
+        info!(index, "lookup jq history");
         Some(commit.into())
     }
 

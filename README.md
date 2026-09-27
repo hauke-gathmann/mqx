@@ -1,6 +1,6 @@
 # mqx
 
-mqx is a desktop MQTT explorer. One window is one broker: connect, watch the topic tree fill as messages arrive, inspect payloads, and keep connection profiles (including TLS files) on disk. Passwords go in the OS keychain, or a private file when no keychain is available.
+mqx is a desktop MQTT explorer. One window is one broker: connect, watch the topic tree fill as messages arrive, inspect payloads, and keep connection profiles (including TLS files) on disk. Passwords use the macOS/Windows keychain or Linux Secret Service, with a permission-protected plaintext file fallback when the keychain is unavailable.
 
 ## Explorer
 
@@ -16,30 +16,32 @@ While connected, Record writes mqtt-trace JSONL (raw payloads). Playback publish
 
 ## Install
 
-**macOS / Linux**
+Release downloads become available after the first verified release is published.
 
-```bash
+**macOS (Apple Silicon / Intel) and Linux x86_64**
+
+```sh
 curl -fsSL https://raw.githubusercontent.com/hauke-gathmann/mqx/main/install.sh | sh
 ```
 
-macOS copies `mqx.app` into `/Applications`. Linux x86_64 drops an AppImage at `~/.local/bin/mqx`.
+The installer verifies release SHA-256 checksums before replacing an existing installation. On macOS it copies the app into `/Applications`, or `~/Applications` if needed. On Linux it installs an AppImage and adds an application-menu entry and icon. No Rust or Node installation is needed.
 
-**Windows**
+macOS builds are ad-hoc signed, **without Apple notarization**. If macOS blocks the app, review it in **System Settings → Privacy & Security → Open Anyway**. Managed Macs may prohibit it. The installer does not change Gatekeeper or quarantine settings.
 
-Download the installer from the [latest GitHub Release](https://github.com/hauke-gathmann/mqx/releases/latest). Prefer `mqx_*_x64-setup.exe` (NSIS, no admin). An MSI (`mqx_*_x64_en-US.msi`) is on the same page if you need it.
+Direct DMG, AppImage, DEB and RPM downloads are on the [releases page](https://github.com/hauke-gathmann/mqx/releases). Target requirements: macOS 13.3+; Linux x86_64 with GTK 3 and WebKitGTK 4.1. Linux ARM64 is not currently built. See [installation troubleshooting](docs/installation.md) for Linux runtime requirements, FUSE, custom locations, specific versions, backups, and removal.
 
-The first builds are unsigned. macOS: right-click the app → Open. Windows: SmartScreen may warn; choose Run anyway. Linux aarch64 is not built yet.
+**Windows:** download the NSIS setup EXE or MSI from the releases page. These installers are unsigned and may trigger SmartScreen.
 
 **Live / Detached.** Detach freezes the **view**; Go live applies traffic received in the meantime, still under the RAM cap. Recording continues while Detached.
 
-**Topic history limit.** Settings has a RAM slider (4–128 GB, default 12 GB). Older extra messages drop first; each topic keeps at least its latest payload. That cap is the in-memory topic store, not the whole process.
+**Topic history limit.** Settings has a RAM slider (64 MiB–128 GiB, default 512 MiB). Older extra messages drop first; each topic keeps at least its latest payload. That cap is the in-memory topic store, not the whole process.
 
 ## Develop
 
 Requires [Rust stable](https://rustup.rs/) and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your platform.
 
 ```bash
-npm install
+npm ci
 npm run tauri dev
 ```
 
@@ -75,37 +77,8 @@ Native menus: **mqx**, **Connections**, **Edit**, **View**, **Help**. `Cmd/Ctrl+
 
 ## Releases
 
-Push a `v*` tag to run [`.github/workflows/release.yml`](.github/workflows/release.yml). The workflow builds `aarch64-apple-darwin` and `x86_64-apple-darwin` on `macos-latest`, plus `windows-latest` and `ubuntu-22.04`, with [`tauri-apps/tauri-action`](https://github.com/tauri-apps/tauri-action) and opens a **draft** GitHub Release. **Publish** that draft so `releases/latest` and `install.sh` work.
+See the [release runbook](docs/releasing.md) for signing-key setup, release checks, supported-platform verification, and publishing. No Apple Developer ID is required. Release builds use ad-hoc macOS signatures and a separate free key for verified in-app updates.
 
-Unsigned artifacts are acceptable until signing certificates exist. macOS/Windows “easy download” (no Gatekeeper/SmartScreen warning) needs the secrets below.
+Every version tag runs the quality checks before packaging and creates a draft. The final verification job checks artifact completeness and updater signatures, and uploads checksums. Publish only after installation tests pass.
 
-### Signing secrets
-
-Configure these repository secrets when you have the material. The workflows do **not** require them; missing secrets skip that kind of signing.
-
-| Secret | Purpose |
-| --- | --- |
-| `APPLE_CERTIFICATE` | Base64-encoded Apple Developer ID Application `.p12` |
-| `APPLE_CERTIFICATE_PASSWORD` | Password for that `.p12` |
-| `APPLE_SIGNING_IDENTITY` | Codesign identity, e.g. `Developer ID Application: …` |
-| `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` | Notarization (`notarytool`) Apple ID + app-specific password. These `APPLE_*` vars are consumed by the Tauri CLI as-is. |
-| `WINDOWS_CERTIFICATE` | Base64-encoded Authenticode PFX. **Not** read by `tauri-action` itself — the Windows job decodes it, imports it into `Cert:\CurrentUser\My`, and writes the certificate thumbprint into a merge config so `signtool` can sign. |
-| `WINDOWS_CERTIFICATE_PASSWORD` | Password for that PFX (used only by the import step) |
-| `TAURI_SIGNING_PRIVATE_KEY` | Tauri updater minisign private key (string contents) |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Optional password for that key |
-
-`tauri.conf.json` already has Windows `digestAlgorithm` / `timestampUrl`. The thumbprint is filled in at release time from the imported PFX. Without `WINDOWS_CERTIFICATE`, the Windows installers stay unsigned.
-
-Generate an updater keypair:
-
-```bash
-npm run tauri signer generate -- -w ~/.tauri/mqx.key
-```
-
-Put the public key in `src-tauri/tauri.conf.json` under `plugins.updater.pubkey`. Store the private key as `TAURI_SIGNING_PRIVATE_KEY`. If you rotate the pair, replace the committed pubkey.
-
-When `TAURI_SIGNING_PRIVATE_KEY` is set, the release job enables `createUpdaterArtifacts` and `tauri-action` uploads `latest.json` for the updater endpoint:
-
-`https://github.com/<owner>/<repo>/releases/latest/download/latest.json`
-
-Match `plugins.updater.endpoints` in `tauri.conf.json` to that URL. **Help → Check for Updates** uses the plugin and fails gracefully when the build is unsigned or `latest.json` is missing.
+Historical design plans are in [docs/plans](docs/plans/). The [readiness assessment](docs/release-readiness.md) records the original review and implementation status.

@@ -343,7 +343,9 @@ mod tests {
         assert_eq!(opts.broker_address(), ("localhost".into(), 1883));
         assert!(!opts.clean_session());
         assert_eq!(opts.keep_alive(), std::time::Duration::from_secs(60));
-        assert_eq!(opts.credentials(), Some(("hauke".into(), "secret".into())));
+        let credentials = opts.credentials().expect("credentials");
+        assert_eq!(credentials.username, "hauke");
+        assert_eq!(credentials.password, "secret");
         assert!(matches!(opts.transport(), Transport::Tcp));
     }
 

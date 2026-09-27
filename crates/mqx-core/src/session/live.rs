@@ -403,9 +403,9 @@ async fn run_live(
                 }
             }
             sub_result = subscribe_front(&client, pending_subs.front()), if !pending_subs.is_empty() && backoff_deadline.is_none() => {
-                let sub = pending_subs.pop_front().expect("guarded");
+                pending_subs.pop_front().expect("guarded");
                 if let Err(error) = sub_result {
-                    warn!(topic = %sub.topic, %error, "subscribe failed");
+                    warn!(%error, "subscribe failed");
                     {
                         let mut guard = lock(&session);
                         guard.set_subscribe_error(error.to_string());

@@ -583,7 +583,8 @@ fn apply_start_recording(
 }
 
 #[tauri::command(rename = "startRecording")]
-pub fn start_recording(state: State<AppState>) -> Result<RecordStatus, String> {
+pub async fn start_recording(state: State<'_, AppState>) -> Result<RecordStatus, String> {
+    let _replace = state.replace.lock().await;
     let directory = recordings_dir(&state)?;
     let live = locked_live(&state)?;
     apply_start_recording(live.as_ref(), directory)
@@ -805,6 +806,7 @@ pub async fn start_replay(
     })
     .await?;
 
+    let _replace = state.replace.lock().await;
     let generation = state.replay_generation.fetch_add(1, Ordering::SeqCst) + 1;
     abort_replay(&state).await?;
 

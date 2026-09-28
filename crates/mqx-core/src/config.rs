@@ -10,9 +10,9 @@ use crate::error::{Error, Result};
 
 const APP_NAME: &str = "mqx";
 
-/// Default in-memory topic-store cap (12 GiB).
-pub const DEFAULT_RAM_LIMIT_BYTES: u64 = 12 * 1024 * 1024 * 1024;
-pub const RAM_LIMIT_MIN_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+/// Default in-memory topic-store cap (512 MiB).
+pub const DEFAULT_RAM_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
+pub const RAM_LIMIT_MIN_BYTES: u64 = 64 * 1024 * 1024;
 pub const RAM_LIMIT_MAX_BYTES: u64 = 128 * 1024 * 1024 * 1024;
 
 pub fn clamp_ram_limit_bytes(bytes: u64) -> u64 {

@@ -4,11 +4,12 @@
   "version": "0.2.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --config ui/vite.config.ts",
-    "build": "vite build --config ui/vite.config.ts",
+    "dev": "node scripts/notices.mjs && vite --config ui/vite.config.ts",
+    "build": "node scripts/notices.mjs && vite build --config ui/vite.config.ts",
     "preview": "vite preview --config ui/vite.config.ts",
     "check": "svelte-check --tsconfig ui/tsconfig.app.json && tsc -p ui/tsconfig.node.json",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:release": "python3 -m unittest discover -s tests -p \"test_*.py\""
   },
   "license": "MIT",
   "dependencies": {

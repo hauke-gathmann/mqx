@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; form-action 'none'"
     }
   },
   "bundle": {
@@ -37,11 +37,24 @@
     "windows": {
       "digestAlgorithm": "sha256",
       "timestampUrl": "http://timestamp.digicert.com"
+    },
+    "category": "DeveloperTool",
+    "shortDescription": "Explore MQTT topics, inspect payloads, and record broker traffic.",
+    "publisher": "mqx contributors",
+    "homepage": "https://github.com/hauke-gathmann/mqx",
+    "license": "MIT",
+    "macOS": {
+      "minimumSystemVersion": "13.3",
+      "signingIdentity": "-"
+    },
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     }
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNGMjkxQjgzQTlFRTNBNjIKUldSaU91NnBneHNwUDRWanBuaFU2SXJRUnRjL1ArUkV1TnVYMkc1YitHMHBZaDZUMGpjWStXUTcK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVEQTUyRTUyMkM1ODcxNDgKUldSSWNWZ3NVaTZsN1FIZGE0eWsyRUlpL1FBdGlKbFp4c1hTaXRwcndDUHpuTW1iS3NwM3Q1QmgK",
       "endpoints": [
         "https://github.com/hauke-gathmann/mqx/releases/latest/download/latest.json"
       ]

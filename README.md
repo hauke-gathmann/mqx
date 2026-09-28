@@ -53,6 +53,8 @@ npm ci
 npm run tauri dev
 ```
 
+The development command generates the bundled dependency notices before compiling the desktop app.
+
 Layout:
 
 - `ui/` — Vite + Svelte 5 frontend

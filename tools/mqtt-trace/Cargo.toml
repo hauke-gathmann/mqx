@@ -10,7 +10,8 @@ publish = false
 anyhow = "1"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
-rumqttc = { version = "0.24", features = ["use-rustls"] }
+rumqttc = { version = "0.25.1", default-features = false, features = ["use-rustls-no-provider"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }

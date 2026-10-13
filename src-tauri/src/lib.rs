@@ -1,4 +1,5 @@
 mod commands;
+mod logging;
 mod menu;
 mod updater;
 
@@ -26,6 +27,7 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _log_guard = logging::init();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -110,6 +112,19 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Native Quit (including Cmd+Q) does not emit WindowEvent::CloseRequested.
+            // Explicit app.exit(0) is the confirmed save/discard path from the UI.
+            if let tauri::RunEvent::ExitRequested {
+                api, code: None, ..
+            } = event
+                && let Some(state) = app.try_state::<AppState>()
+                && commands::should_defer_exit(&state)
+            {
+                api.prevent_exit();
+                let _ = app.emit("app/close-requested", ());
+            }
+        });
 }

@@ -8,7 +8,7 @@ Turn this repo from a Ratatui MQTT explorer into a downloadable desktop app for 
 
 Existing mqttui strengths that *do* ship in v1: JSON pretty-print, jq, fuzzy search, fresh/stale/retain coloring, per-topic in-memory history.
 
-**v2 is not built in this plan.** The architecture below is shaped so those features plug in without a rewrite. The current V2 design (RAM budget, detach, record, broker replay — publish UI is V3) is [plans/planV2.md](planV2.md).
+**v2 is not built in this plan.** The architecture below is shaped so those features plug in without a rewrite. The current V2 design (RAM budget, detach, record, broker replay — publish UI is V3) is [docs/plans/planV2.md](planV2.md).
 
 ---
 

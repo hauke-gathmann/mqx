@@ -30,7 +30,7 @@
     onrecordDirectory: (directory: string) => void;
   } = $props();
 
-  let ramGb = $state(12);
+  let ramGb = $state(0.5);
   let dialog = $state<HTMLDivElement | null>(null);
   let directory = $state("");
   let pickError = $state<string | null>(null);
@@ -135,7 +135,7 @@
             type="range"
             min={RAM_LIMIT_MIN_GB}
             max={RAM_LIMIT_MAX_GB}
-            step="1"
+            step="0.0625"
             value={ramGb}
             disabled={busy}
             oninput={(event) => {
@@ -143,7 +143,7 @@
             }}
             onchange={() => onramlimit(ramGb * GIB)}
           />
-          <span class="ram-value">{ramGb} GB</span>
+          <span class="ram-value">{ramGb < 1 ? `${ramGb * 1024} MiB` : `${ramGb} GiB`}</span>
         </div>
         <p class="hint">
           Drops older messages when the in-memory store exceeds this. Each topic keeps at least its
@@ -174,7 +174,7 @@
           Check for Updates…
         </button>
         <p class="hint">
-          Unsigned builds or a missing latest.json fail with the existing dialog.
+          Updates preserve your saved profiles. Stop playback and save any recording before updating.
         </p>
       </fieldset>
     </div>

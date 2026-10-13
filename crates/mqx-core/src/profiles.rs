@@ -374,7 +374,8 @@ fn keyring_available() -> bool {
     cfg!(any(
         target_os = "macos",
         target_os = "ios",
-        target_os = "windows"
+        target_os = "windows",
+        target_os = "linux"
     ))
 }
 

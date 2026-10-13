@@ -314,6 +314,8 @@
 <div
   bind:this={wrap}
   class="wrap"
+  role="region"
+  aria-label="Message payload"
   oncontextmenu={onContextMenu}
 >
   <div bind:this={parent} class="cm"></div>

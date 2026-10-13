@@ -72,7 +72,7 @@ pub async fn run_replay(job: ReplayJob) {
     let total = events.len() as u64;
     let t0 = events[0].t_ms;
     let t_end_ms = events.last().map(|event| event.t_ms).unwrap_or(t0);
-    info!(file = %file, total, "replay start");
+    info!(total, "replay start");
 
     let mut guard = StopOnDrop {
         file: file.clone(),
@@ -114,7 +114,7 @@ pub async fn run_replay(job: ReplayJob) {
             .publish(&event.topic, qos_from_u8(event.qos), event.retain, payload)
             .await
         {
-            tracing::warn!(%error, topic = %event.topic, "replay publish");
+            tracing::warn!(%error, "replay publish");
             break;
         }
 
@@ -143,7 +143,7 @@ pub async fn run_replay(job: ReplayJob) {
     }
 
     if guard.index == total {
-        info!(file = %file, total, "replay ended");
+        info!(total, "replay ended");
         emit(
             &events_tx,
             &file,
@@ -157,7 +157,7 @@ pub async fn run_replay(job: ReplayJob) {
         );
         guard.done = true;
     } else {
-        info!(file = %file, index = guard.index, total, "replay stopped");
+        info!(index = guard.index, total, "replay stopped");
     }
 }
 

@@ -561,7 +561,7 @@ If any locked call above is wrong, change it before PR 1.
 
 ## References
 
-- `plans/planV1.md` § Upcoming (v2)
+- `docs/plans/planV1.md` § Upcoming (v2)
 - `crates/mqx-core/src/tree.rs` — `upsert`, `buffer_size`, `Leaf.history`
 - `crates/mqx-core/src/session/live.rs` — event loop, decode queue, `LiveHandle`
 - `ui/src/App.svelte` — `live` / `showPicker`
@@ -620,7 +620,7 @@ Each PR is independently reviewable. App remains a usable v1 explorer until reco
 ### PR 7: 0.2.0 polish
 
 - **PR title:** `chore: 0.2.0 changelog, menus, README`
-- **Files:** `CHANGELOG.md`, versions, `README.md` (record/replay, RAM slider, detach, mqtt-trace caveat that CLI replay of in-app files is a traffic dump onto a broker), `plans/planV1.md` pointer
+- **Files:** `CHANGELOG.md`, versions, `README.md` (record/replay, RAM slider, detach, mqtt-trace caveat that CLI replay of in-app files is a traffic dump onto a broker), `docs/plans/planV1.md` pointer
 - **Dependencies:** PRs 1–6
 
 **Parallelization:** PR 1, 2, 3, 4 are independent. PR 5 after 2+4. PR 6 after 2+4 (5 preferred). PR 7 last.

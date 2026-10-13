@@ -14,3 +14,8 @@ debug
 **/*.rs.bk
 *.pdb
 **/mutants.out*/
+
+# Generated dependency notices are bundled by npm run build.
+/THIRD_PARTY_NOTICES.md
+/tests/__pycache__/
+/scripts/__pycache__/

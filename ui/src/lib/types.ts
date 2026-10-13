@@ -423,8 +423,8 @@ export type UiSettings = {
   recordDirectory: string;
 };
 
-export const DEFAULT_RAM_LIMIT_BYTES = 12 * 1024 * 1024 * 1024;
-export const RAM_LIMIT_MIN_GB = 4;
+export const DEFAULT_RAM_LIMIT_BYTES = 512 * 1024 * 1024;
+export const RAM_LIMIT_MIN_GB = 0.0625;
 export const RAM_LIMIT_MAX_GB = 128;
 const GIB = 1024 * 1024 * 1024;
 
@@ -616,7 +616,7 @@ export function formatStoreUsage(storedBytes: number, limitBytes: number): strin
 }
 
 export function ramLimitGb(bytes: number): number {
-  return Math.round(bytes / GIB);
+  return Number((bytes / GIB).toFixed(4));
 }
 
 export function errorMessage(err: unknown): string {

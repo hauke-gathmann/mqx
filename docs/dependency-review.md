@@ -2,6 +2,10 @@
 
 The frontend audit is clear after updating the locked `devalue` dependency. Rust upgrades include `bytes`, `time`, `plist`/`quick-xml`, `anyhow`, `rand`, `rumqttc`, and `rustls`.
 
+## Frontend audit update — 2026-10-30
+
+Vite is updated to 8.2.4 to address later development-server advisories. The npm audit still reports a low-severity [deepmerge advisory](https://github.com/advisories/GHSA-gcqx-w48m-w2h4) and its dependent Svelte Vite plugin; no patched deepmerge version is available. These are build-time dependencies, not code shipped in the desktop app. Revisit the advisory when an upstream fix is released. CI fails on high or critical npm advisories and continues to report lower-severity findings.
+
 ## Narrow certificate-library exceptions
 
 `rumqttc 0.25.1` depends directly on `rustls-webpki 0.102.8`, but its only source reference is the `webpki::Error` payload of `tls::Error::WebPki`. It does not use that version for certificate parsing or validation. Its TLS connector uses the Rustls types re-exported by `tokio-rustls 0.26`; both mqx and that connector use patched `rustls 0.23.45` and `rustls-webpki 0.103.14` for certificate verification.

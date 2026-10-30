@@ -45,8 +45,8 @@ class ReleaseTests(unittest.TestCase):
             for name in names:
                 (path / name).write_bytes(b'artifact')
             metadata = {'version': version, 'platforms': {}}
-            for platform, name in [('darwin-aarch64', 'mqx_aarch64.app.tar.gz'),
-                                   ('darwin-x86_64', 'mqx_x64.app.tar.gz'),
+            for platform, name in [('darwin-aarch64', f'mqx_{version}_aarch64.app.tar.gz'),
+                                   ('darwin-x86_64', f'mqx_{version}_x64.app.tar.gz'),
                                    ('linux-x86_64', f'mqx_{version}_amd64.AppImage'),
                                    ('windows-x86_64', f'mqx_{version}_x64-setup.exe')]:
                 (path / name).write_bytes(b'updater artifact')
@@ -66,8 +66,48 @@ class ReleaseTests(unittest.TestCase):
             save()
             with self.assertRaisesRegex(ValueError, 'Unexpected update URL'):
                 release.verify(path, version)
+            item['url'] = metadata['platforms']['darwin-x86_64']['url']
+            with self.assertRaisesRegex(ValueError, 'Unexpected updater artifact'):
+                save()
+                release.verify(path, version)
             item['url'] = correct_url
             item['signature'] = base64.b64encode(b'wrong signature').decode()
             save()
             with self.assertRaisesRegex(ValueError, 'signature metadata mismatch'):
                 release.verify(path, version)
+
+    def test_draft_api_urls_are_resolved_to_signed_release_assets(self):
+        version = release.version_info()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            name = f'mqx_{version}_aarch64.app.tar.gz'
+            signature = base64.b64encode(b'fixture signature').decode()
+            (path / name).write_bytes(b'updater artifact')
+            (path / (name + '.sig')).write_text(signature)
+            metadata = {'version': version, 'platforms': {'darwin-aarch64': {
+                'url': 'https://api.github.com/repos/hauke-gathmann/mqx/releases/assets/123',
+                'signature': signature,
+            }}}
+            (path / 'latest.json').write_text(json.dumps(metadata))
+            draft = {'tag_name': 'v' + version, 'draft': True,
+                     'assets': [{'id': 123, 'name': name}]}
+            release.normalize_updates(path, version, draft)
+            updated = json.loads((path / 'latest.json').read_text())
+            self.assertEqual(updated['platforms']['darwin-aarch64']['url'],
+                             f'https://github.com/hauke-gathmann/mqx/releases/download/v{version}/{name}')
+            release.normalize_updates(path, version, draft)  # Safe to retry.
+            with self.assertRaisesRegex(ValueError, 'matching draft release'):
+                release.normalize_updates(path, version, {**draft, 'draft': False})
+            metadata['platforms']['darwin-aarch64']['url'] = 'https://api.github.com/repos/hauke-gathmann/mqx/releases/assets/999'
+            (path / 'latest.json').write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, 'unknown release asset'):
+                release.normalize_updates(path, version, draft)
+            metadata['platforms']['darwin-aarch64']['url'] = 'https://example.com/file'
+            (path / 'latest.json').write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, 'Unexpected update URL'):
+                release.normalize_updates(path, version, draft)
+            metadata['platforms']['darwin-aarch64']['url'] = 'https://api.github.com/repos/hauke-gathmann/mqx/releases/assets/123'
+            metadata['platforms']['darwin-aarch64']['signature'] = 'wrong'
+            (path / 'latest.json').write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, 'signature metadata mismatch'):
+                release.normalize_updates(path, version, draft)

@@ -2,7 +2,7 @@
 
 # mqx
 
-mqx is a desktop MQTT explorer. One window is one broker: connect, watch the topic tree fill as messages arrive, inspect payloads, and keep connection profiles (including TLS files) on disk. Passwords use the macOS/Windows keychain or Linux Secret Service, with a permission-protected plaintext file fallback when the keychain is unavailable.
+mqx is a desktop MQTT explorer. Connect to a broker, browse its topic tree, inspect message history and payloads, and record or replay traffic. Each window connects to one broker. Connection profiles and TLS file paths are saved locally.
 
 ## Explorer
 
@@ -28,21 +28,21 @@ Profiles and settings are stored under the `mqx` application directory. Theme is
 
 ## Install
 
-Release downloads become available after the first verified release is published.
-
-**macOS (Apple Silicon / Intel) and Linux x86_64**
+On **macOS 13.3 or newer** (Apple Silicon or Intel) and **Linux x86_64**, run:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hauke-gathmann/mqx/main/install.sh | sh
 ```
 
-The installer verifies release SHA-256 checksums before replacing an existing installation. On macOS it copies the app into `/Applications`, or `~/Applications` if needed. On Linux it installs an AppImage and adds an application-menu entry and icon. No Rust or Node installation is needed.
+The installer downloads the latest stable release and verifies its SHA-256 checksum. On macOS it installs to `/Applications`, or `~/Applications` if necessary. On Linux it installs an AppImage and adds an application-menu entry. Rust and Node are not required.
 
-macOS builds are ad-hoc signed, **without Apple notarization**. If macOS blocks the app, review it in **System Settings → Privacy & Security → Open Anyway**. Managed Macs may prohibit it. The installer does not change Gatekeeper or quarantine settings.
+**Opening on macOS:** Open mqx from Applications. The app is ad-hoc signed and is not notarized by Apple. If macOS blocks it, review the warning under **System Settings → Privacy & Security → Open Anyway**. Managed Macs may prohibit opening it.
 
-Direct DMG, AppImage, DEB and RPM downloads are on the [releases page](https://github.com/hauke-gathmann/mqx/releases). Target requirements: macOS 13.3+; Linux x86_64 with GTK 3 and WebKitGTK 4.1. Linux ARM64 is not currently built. See [installation troubleshooting](docs/installation.md) for Linux runtime requirements, FUSE, custom locations, specific versions, backups, and removal.
+Direct DMG, AppImage, DEB and RPM downloads are available on the [releases page](https://github.com/hauke-gathmann/mqx/releases). Linux needs GTK 3 and WebKitGTK 4.1; Linux ARM64 is not currently built. See the [installation guide](docs/installation.md) for runtime requirements, FUSE, custom locations, specific versions, backups and removal.
 
-**Windows:** download the NSIS setup EXE or MSI from the releases page. These installers are unsigned and may trigger SmartScreen.
+**Windows:** download the setup EXE or MSI from the releases page. These installers are unsigned and may trigger SmartScreen.
+
+Passwords use the macOS or Windows keychain or Linux Secret Service when available. If the keychain is unavailable, mqx falls back to a permission-protected local file. Profiles, settings and recordings are preserved when the app is uninstalled.
 
 ## Develop
 

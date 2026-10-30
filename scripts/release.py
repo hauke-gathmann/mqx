@@ -41,6 +41,44 @@ def checksums(directory):
     (directory / 'SHA256SUMS').write_text(''.join(lines))
 
 
+def normalize_updates(directory, version, release):
+    """Turn Tauri's draft asset API URLs into public, versioned download URLs."""
+    if release.get('tag_name') != 'v' + version or not release.get('draft'):
+        raise ValueError('Expected the matching draft release')
+    assets = release.get('assets', [])
+    by_id = {}
+    for asset in assets:
+        name = asset['name']
+        if not re.fullmatch(r'[A-Za-z0-9._+-]+', name) or asset['id'] in by_id:
+            raise ValueError('Invalid or duplicate release asset')
+        by_id[asset['id']] = name
+
+    path = directory / 'latest.json'
+    metadata = json.loads(path.read_text())
+    if metadata['version'].removeprefix('v') != version:
+        raise ValueError('Updater metadata version differs from application version')
+    api_prefix = 'https://api.github.com/repos/hauke-gathmann/mqx/releases/assets/'
+    download_prefix = f'https://github.com/hauke-gathmann/mqx/releases/download/v{version}/'
+    for item in metadata['platforms'].values():
+        url = item['url']
+        if url.startswith(api_prefix) and re.fullmatch(r'[0-9]+', url[len(api_prefix):]):
+            asset_id = int(url[len(api_prefix):])
+            if asset_id not in by_id:
+                raise ValueError(f'Updater URL refers to an unknown release asset: {url}')
+            name = by_id[asset_id]
+        elif url.startswith(download_prefix) and url[len(download_prefix):] in by_id.values():
+            name = url[len(download_prefix):]
+        else:
+            raise ValueError(f'Unexpected update URL: {url}')
+        signature = directory / (name + '.sig')
+        if not (directory / name).is_file() or not signature.is_file():
+            raise ValueError(f'Missing updater artifact/signature: {name}')
+        if signature.read_text().strip() != item['signature'].strip():
+            raise ValueError(f'Updater signature metadata mismatch: {name}')
+        item['url'] = download_prefix + name
+    path.write_text(json.dumps(metadata, indent=2) + '\n')
+
+
 def verify(directory, version):
     files = {p.name for p in directory.iterdir() if p.is_file()}
     required = [
@@ -60,14 +98,24 @@ def verify(directory, version):
     metadata = json.loads((directory / 'latest.json').read_text())
     if metadata['version'].removeprefix('v') != version:
         raise ValueError('Updater metadata version differs from application version')
-    for platform in ('darwin-aarch64', 'darwin-x86_64', 'linux-x86_64', 'windows-x86_64'):
-        # tauri-action v1 may also emit installer-specific keys; require the generic fallback.
-        item = metadata['platforms'][platform]
+    expected = {
+        'darwin-aarch64': rf'mqx_{re.escape(version)}_aarch64\.app\.tar\.gz',
+        'darwin-x86_64': rf'mqx_{re.escape(version)}_x64\.app\.tar\.gz',
+        'linux-x86_64': rf'mqx_{re.escape(version)}_amd64\.AppImage',
+        'windows-x86_64': rf'mqx_{re.escape(version)}_x64(?:-setup\.exe|_en-US\.msi)',
+    }
+    if not expected.keys() <= metadata['platforms'].keys():
+        raise ValueError('Missing required updater platforms')
+    for platform, item in metadata['platforms'].items():
         url = item['url']
         prefix = f'https://github.com/hauke-gathmann/mqx/releases/download/v{version}/'
         if not url.startswith(prefix):
             raise ValueError(f'Unexpected update URL: {url}')
         name = url[len(prefix):]
+        if not re.fullmatch(r'[A-Za-z0-9._+-]+', name):
+            raise ValueError(f'Unexpected update URL: {url}')
+        if platform in expected and not re.fullmatch(expected[platform], name):
+            raise ValueError(f'Unexpected updater artifact for {platform}: {name}')
         if name not in files or not (directory / (name + '.sig')).is_file():
             raise ValueError(f'Missing updater artifact/signature for {platform}: {name}')
         if (directory / (name + '.sig')).read_text().strip() != item['signature'].strip():
@@ -101,9 +149,10 @@ The installer verifies SHA-256 checksums. In-app updates verify a separate updat
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['version', 'notes', 'verify', 'checksums'])
+    parser.add_argument('command', choices=['version', 'notes', 'verify', 'checksums', 'normalize-updates'])
     parser.add_argument('--tag')
     parser.add_argument('--directory', type=Path)
+    parser.add_argument('--release-json', type=Path)
     args = parser.parse_args()
     version = version_info(args.tag)
     if args.command == 'version':
@@ -112,6 +161,8 @@ def main():
         print(notes(version))
     elif args.command == 'verify':
         verify(args.directory, version)
+    elif args.command == 'normalize-updates':
+        normalize_updates(args.directory, version, json.loads(args.release_json.read_text()))
     else:
         checksums(args.directory)
 

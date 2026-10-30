@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## 0.2.1
+
+* Update TLS certificate verification and trust roots to reject compromised emSign intermediates.
+* Update the Windows updater's ZIP dependency and other security fixes.
+* Fix release verification and clarify installation instructions.
+
 ## 0.2.0
 
 * Verified curl installation, recoverable Mac replacement, and Linux desktop integration

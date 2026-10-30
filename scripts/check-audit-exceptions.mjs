@@ -6,6 +6,12 @@ import assert from 'node:assert/strict';
 const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--format-version', '1', '--locked'], { maxBuffer: 30 * 1024 * 1024 }));
 const legacy = metadata.packages.find(p => p.name === 'rustls-webpki' && p.version === '0.102.8');
 assert(legacy, 'Remove the old webpki audit exceptions: the reviewed dependency is no longer present.');
+const otherWebpki = metadata.packages.filter(p => p.name === 'rustls-webpki' && p.id !== legacy.id);
+assert(otherWebpki.length > 0, 'Review the active certificate verifier.');
+for (const pkg of otherWebpki) {
+  const version = /^0\.103\.(\d+)$/.exec(pkg.version);
+  assert(version && Number(version[1]) >= 16, `Review the certificate verifier version: ${pkg.version}`);
+}
 const mqtt = metadata.packages.find(p => p.name === 'rumqttc' && p.version === '0.25.1');
 assert(mqtt, 'Re-review the audit exceptions after changing rumqttc.');
 for (const node of metadata.resolve.nodes) {

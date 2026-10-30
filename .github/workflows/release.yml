@@ -105,7 +105,8 @@ jobs:
 
   verify:
     needs: [build, preflight]
-    runs-on: ubuntu-22.04
+    # Ubuntu 22.04 does not provide the minisign executable.
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     env:
@@ -125,6 +126,8 @@ jobs:
           gh release download "$RELEASE_TAG" --dir release-assets --clobber
           cp install.sh LICENSE release-assets/
           cp src-tauri/icons/128x128.png release-assets/mqx.png
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == env.RELEASE_TAG)' > "$RUNNER_TEMP/release.json"
+          python3 scripts/release.py normalize-updates --tag "$RELEASE_TAG" --directory release-assets --release-json "$RUNNER_TEMP/release.json"
           python3 scripts/release.py verify --tag "$RELEASE_TAG" --directory release-assets
           sudo apt-get update
           sudo apt-get install -y minisign
@@ -135,6 +138,6 @@ jobs:
           done
           python3 scripts/release.py checksums --directory release-assets
           python3 scripts/release.py notes --tag "$RELEASE_TAG" > "$RUNNER_TEMP/release-notes.md"
-          gh release upload "$RELEASE_TAG" release-assets/SHA256SUMS release-assets/install.sh release-assets/LICENSE release-assets/THIRD_PARTY_NOTICES.md release-assets/mqx.png --clobber
+          gh release upload "$RELEASE_TAG" release-assets/SHA256SUMS release-assets/latest.json release-assets/install.sh release-assets/LICENSE release-assets/THIRD_PARTY_NOTICES.md release-assets/mqx.png --clobber
           gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
           echo 'Verified draft is ready for installation testing. Publication remains manual.' >> "$GITHUB_STEP_SUMMARY"

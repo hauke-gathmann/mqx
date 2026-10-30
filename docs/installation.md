@@ -1,6 +1,6 @@
 # Installation and troubleshooting
 
-Use the [release downloads](https://github.com/hauke-gathmann/mqx/releases) or the curl command in the README. Binary releases need no development tools. The first public download is available only after a verified release is published.
+Use the [release downloads](https://github.com/hauke-gathmann/mqx/releases) or the curl command in the README. Binary releases need no development tools.
 
 ## Choose a version or installation directory
 
@@ -8,7 +8,7 @@ Download the script for review before executing it:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hauke-gathmann/mqx/main/install.sh -o install-mqx.sh
-sh install-mqx.sh --version v0.2.0
+sh install-mqx.sh --version v0.2.1
 ```
 
 `--version` accepts a published stable or prerelease tag. Omit it to use the latest stable release. For fully version-pinned installation, download the script from the same version tag instead of `main`.

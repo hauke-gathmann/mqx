@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { listRecordings } from "./api";
+  import { deleteRecording, listRecordings, openRecordingsFolder } from "./api";
   import {
     brokerLabel,
     errorMessage,
@@ -45,6 +45,8 @@
   let profileId = $state("");
   let loadError = $state<string | null>(null);
   let loaded = $state(false);
+  let changing = $state(false);
+  let menu = $state<{ recording: RecordingInfo; x: number; y: number } | null>(null);
 
   const selected = $derived(recordings.find((item) => item.path === selectedPath) ?? null);
   const playing = $derived(playback?.state === "playing");
@@ -60,7 +62,7 @@
   });
   const span = $derived(playback ? playbackSpanMs(playback, t0Ms) : { elapsed: 0, duration: 0 });
   const canPlay = $derived(
-    !!selected && !!targetProfileId && !busy && (!sessionOpen || !!sessionProfileId),
+    !!selected && !!targetProfileId && !busy && !changing && (!sessionOpen || !!sessionProfileId),
   );
 
   async function refresh() {
@@ -81,6 +83,49 @@
     }
   }
 
+  async function openFolder() {
+    try {
+      await openRecordingsFolder();
+      loadError = null;
+    } catch (err) {
+      loadError = errorMessage(err);
+    }
+  }
+
+  function showMenu(event: MouseEvent, recording: RecordingInfo) {
+    event.preventDefault();
+    selectedPath = recording.path;
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const x = event.clientX || rect.left + 20;
+    const y = event.clientY || rect.top + rect.height;
+    menu = {
+      recording,
+      x: Math.max(0, Math.min(x, window.innerWidth - 190)),
+      y: Math.max(0, Math.min(y, window.innerHeight - 60)),
+    };
+  }
+
+  async function removeRecording(recording: RecordingInfo) {
+    menu = null;
+    if (!confirm(`Permanently delete “${recordingLabel(recording.name)}”?`)) return;
+    changing = true;
+    try {
+      await deleteRecording(recording.path);
+      await refresh();
+    } catch (err) {
+      loadError = errorMessage(err);
+    } finally {
+      changing = false;
+    }
+  }
+
+  function duration(recording: RecordingInfo): string {
+    if (recording.firstTMs == null || recording.lastTMs == null) return "Duration unavailable";
+    const ms = Math.max(0, recording.lastTMs - recording.firstTMs);
+    if (ms > 0 && ms < 1000) return `${ms} ms`;
+    return formatClock(ms);
+  }
+
   $effect(() => {
     if (!profileId && lastUsedId && profiles.some((profile) => profile.id === lastUsedId)) {
       profileId = lastUsedId;
@@ -93,6 +138,14 @@
     void refresh();
   });
 </script>
+
+<svelte:window
+  onfocus={() => { if (loaded) void refresh(); }}
+  onpointerdown={(event) => {
+    if (!(event.target instanceof Element) || !event.target.closest("[data-playback-menu]")) menu = null;
+  }}
+  onkeydown={(event) => { if (event.key === "Escape") menu = null; }}
+/>
 
 <section class="playback">
   <header>
@@ -116,6 +169,11 @@
       </label>
     {/if}
   </header>
+
+  <div class="folder-actions">
+    <button type="button" onclick={openFolder}>Open recordings folder</button>
+    <button type="button" onclick={refresh}>Refresh</button>
+  </div>
 
   {#if loadError}
     <p class="banner" role="alert">{loadError}</p>
@@ -142,14 +200,26 @@
             role="option"
             aria-selected={active}
             onclick={() => (selectedPath = recording.path)}
+            oncontextmenu={(event) => showMenu(event, recording)}
           >
             <span class="name">{recordingLabel(recording.name)}</span>
             <span class="time">{formatRecordingTime(recording)}</span>
-            <span class="meta">{recording.messages} messages · {recording.topics} topics</span>
+            <span class="meta">{duration(recording)} · {recording.messages} messages · {recording.topics} topics</span>
           </button>
         </li>
       {/each}
     </ul>
+  {/if}
+
+  {#if menu}
+    <div class="menu" data-playback-menu style:left="{menu.x}px" style:top="{menu.y}px" role="menu">
+      <button
+        type="button"
+        role="menuitem"
+        disabled={changing || busy || (playing && playback?.file === menu.recording.fileName)}
+        onclick={() => { if (menu) void removeRecording(menu.recording); }}
+      >Delete trace…</button>
+    </div>
   {/if}
 
   <div class="transport">
@@ -227,6 +297,44 @@
     font-size: 13px;
     min-width: 0;
   }
+
+  .folder-actions {
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .folder-actions button {
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elevated);
+    border-radius: var(--radius-sm);
+    padding: 0.3rem 0.6rem;
+    font-size: 12px;
+  }
+
+  .menu {
+    position: fixed;
+    z-index: 10;
+    min-width: 11rem;
+    padding: 0.2rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow);
+  }
+
+  .menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 0.4rem 0.55rem;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--danger);
+    font-size: 12px;
+  }
+
+  .menu button:hover:not(:disabled) { background: var(--bg-hover); }
 
   .chip {
     font-family: var(--mono);

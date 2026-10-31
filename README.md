@@ -16,6 +16,8 @@ The topic tree fills in as publishes arrive. Search filters paths; pick a topic 
 
 While connected, Record writes mqtt-trace JSONL (raw payloads). Playback publishes a capture onto the broker, including retain flags — that can change retained state on the target. Stay Live to watch the tree, or Detach to freeze the view; replay itself does not flip Live / Detached.
 
+Playback shows each trace's duration from its first to last message. Right-click a trace to delete it. Use **Open recordings folder** to share a JSONL file or copy a capture into the folder, then return to mqx or select **Refresh** to see it.
+
 ![Playback — replaying a capture onto the connected broker](https://raw.githubusercontent.com/hauke-gathmann/mqx/main/docs/images/playback.png)
 
 ## Configuration

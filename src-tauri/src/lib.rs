@@ -97,6 +97,8 @@ pub fn run() {
             commands::save_recording,
             commands::discard_recording,
             commands::list_recordings,
+            commands::delete_recording,
+            commands::open_recordings_folder,
             commands::pick_folder,
             commands::set_record_directory,
             commands::exit_app,

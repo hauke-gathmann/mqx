@@ -8,7 +8,7 @@ Download the script for review before executing it:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hauke-gathmann/mqx/main/install.sh -o install-mqx.sh
-sh install-mqx.sh --version v0.2.1
+sh install-mqx.sh --version v0.3.0
 ```
 
 `--version` accepts a published stable or prerelease tag. Omit it to use the latest stable release. For fully version-pinned installation, download the script from the same version tag instead of `main`.

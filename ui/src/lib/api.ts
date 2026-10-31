@@ -56,6 +56,14 @@ export function listRecordings(): Promise<RecordingsList> {
   return invoke<RecordingsList>("listRecordings");
 }
 
+export function deleteRecording(path: string): Promise<void> {
+  return invoke<void>("deleteRecording", { path });
+}
+
+export function openRecordingsFolder(): Promise<void> {
+  return invoke<void>("openRecordingsFolder");
+}
+
 export function startReplay(path: string, profileId?: string | null): Promise<ReplayReply> {
   return invoke<ReplayReply>("startReplay", {
     path,

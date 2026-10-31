@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{BufRead, BufReader, BufWriter, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     sync::{
         Arc,
@@ -242,7 +242,7 @@ pub fn inspect_recording(path: &Path, meta: &fs::Metadata) -> Result<RecordingIn
 }
 
 fn inspect_recording_from(
-    mut reader: impl BufRead,
+    mut reader: impl BufRead + Seek,
     path: &Path,
     meta: &fs::Metadata,
 ) -> Result<RecordingInfo> {
@@ -303,13 +303,24 @@ fn inspect_recording_from(
     }
 
     if let Some(header) = header {
+        // Saved recordings have trustworthy counts in their header. Read only the
+        // first and last event for duration instead of scanning the whole file.
+        while let Ok(Some(line)) = read_line_capped(&mut reader, MAX_LINE_BYTES) {
+            if !line.trim().is_empty() {
+                first_t_ms = RecordEvent::from_jsonl(&line).ok().map(|event| event.t_ms);
+                break;
+            }
+        }
+        if first_t_ms.is_some() {
+            last_t_ms = last_event_timestamp(&mut reader);
+        }
         return Ok(RecordingInfo {
             path: path.display().to_string(),
             name,
             file_name,
             started_at: Some(header.started_at),
-            first_t_ms: None,
-            last_t_ms: None,
+            first_t_ms,
+            last_t_ms,
             messages: header.messages,
             topics: header.topics,
             bytes,
@@ -329,6 +340,38 @@ fn inspect_recording_from(
         bytes,
         mtime_ms,
     })
+}
+
+fn last_event_timestamp(reader: &mut (impl Read + Seek)) -> Option<u64> {
+    let mut position = reader.seek(SeekFrom::End(0)).ok()?;
+    let mut line = Vec::new();
+    let mut chunk = [0u8; 8192];
+    while position > 0 {
+        let len = position.min(chunk.len() as u64) as usize;
+        position -= len as u64;
+        reader.seek(SeekFrom::Start(position)).ok()?;
+        reader.read_exact(&mut chunk[..len]).ok()?;
+        for &byte in chunk[..len].iter().rev() {
+            if byte == b'\n' {
+                if line.iter().any(|b: &u8| !b.is_ascii_whitespace()) {
+                    line.reverse();
+                    return RecordEvent::from_jsonl(std::str::from_utf8(&line).ok()?)
+                        .ok()
+                        .map(|event| event.t_ms);
+                }
+                line.clear();
+            } else {
+                line.push(byte);
+                if line.len() > MAX_LINE_BYTES {
+                    return None;
+                }
+            }
+        }
+    }
+    line.reverse();
+    RecordEvent::from_jsonl(std::str::from_utf8(&line).ok()?)
+        .ok()
+        .map(|event| event.t_ms)
 }
 
 pub fn load_recording_from(
@@ -752,6 +795,21 @@ pub fn discard_recording(temp_path: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
+}
+
+/// Remove only a visible recording directly inside the configured directory.
+pub fn delete_recording(directory: &Path, path: &Path) -> Result<()> {
+    if path.parent() != Some(directory) || !is_listed_recording(path) {
+        return Err(Error::Recording(
+            "not a recording in the recordings folder".into(),
+        ));
+    }
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() && !metadata.file_type().is_symlink() {
+        return Err(Error::Recording("recording is not a file".into()));
+    }
+    fs::remove_file(path)?;
+    Ok(())
 }
 
 pub fn list_recording_files(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -1234,7 +1292,53 @@ mod tests {
         assert_eq!(info.started_at.as_deref(), Some("2026-08-26T12:00:00.000Z"));
         assert_eq!(info.messages, 2);
         assert_eq!(info.topics, 1);
-        assert!(info.first_t_ms.is_none());
+        assert_eq!(info.first_t_ms, Some(1_787_735_165_782));
+        assert_eq!(info.last_t_ms, Some(1_787_735_165_882));
+    }
+
+    #[test]
+    fn inspect_header_duration_handles_empty_and_long_last_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = sample_header().to_jsonl().unwrap();
+        let path = write_jsonl(dir.path(), "empty.jsonl", &format!("{header}\n\n"));
+        let info = inspect_recording(&path, &fs::metadata(&path).unwrap()).unwrap();
+        assert_eq!((info.first_t_ms, info.last_t_ms), (None, None));
+
+        let payload = "Y".repeat(20_000);
+        fs::write(&path, format!(
+            "{header}\n{{\"t_ms\":10,\"topic\":\"a\",\"qos\":0,\"retain\":false,\"payload\":\"\"}}\n{{\"t_ms\":25,\"topic\":\"b\",\"qos\":0,\"retain\":false,\"payload\":\"{payload}\"}}\n \n"
+        )).unwrap();
+        let info = inspect_recording(&path, &fs::metadata(&path).unwrap()).unwrap();
+        assert_eq!((info.first_t_ms, info.last_t_ms), (Some(10), Some(25)));
+    }
+
+    #[test]
+    fn delete_recording_restricts_removal_to_visible_recordings() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let capture = write_jsonl(dir.path(), "capture.jsonl", "test");
+        let hidden = write_jsonl(dir.path(), ".mqx-pending.jsonl", "test");
+        let notes = write_jsonl(dir.path(), "notes.txt", "test");
+        let outside = write_jsonl(other.path(), "outside.jsonl", "test");
+        for path in [&hidden, &notes, &outside] {
+            assert!(delete_recording(dir.path(), path).is_err());
+            assert!(path.exists());
+        }
+        delete_recording(dir.path(), &capture).unwrap();
+        assert!(!capture.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_recording_unlinks_symlink_without_deleting_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let target = write_jsonl(other.path(), "outside.jsonl", "test");
+        let link = dir.path().join("linked.jsonl");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        delete_recording(dir.path(), &link).unwrap();
+        assert!(!link.exists());
+        assert!(target.exists());
     }
 
     #[test]

@@ -762,6 +762,29 @@ pub fn list_recordings(state: State<AppState>) -> Result<RecordingsList, String>
     })
 }
 
+#[tauri::command(rename = "deleteRecording")]
+pub fn delete_recording(state: State<AppState>, path: String) -> Result<(), String> {
+    let directory = recordings_dir(&state)?;
+    mqx_core::delete_recording(&directory, std::path::Path::new(&path)).map_err(err)
+}
+
+#[tauri::command(rename = "openRecordingsFolder")]
+pub fn open_recordings_folder(state: State<AppState>) -> Result<(), String> {
+    let directory = recordings_dir(&state)?;
+    std::fs::create_dir_all(&directory).map_err(err)?;
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(target_os = "linux")]
+    let program = "xdg-open";
+    #[cfg(target_os = "windows")]
+    let program = "explorer.exe";
+    std::process::Command::new(program)
+        .arg(&directory)
+        .spawn()
+        .map_err(|error| format!("Could not open the recordings folder: {error}"))?;
+    Ok(())
+}
+
 #[tauri::command(rename = "startReplay")]
 pub async fn start_replay(
     app: AppHandle,

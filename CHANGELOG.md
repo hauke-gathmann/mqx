@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## 0.3.0
+
+* Show each trace's duration from its first to last message.
+* Delete traces from the Playback right-click menu.
+* Open the recordings folder to share or import captures, and refresh the trace list.
+
 ## 0.2.1
 
 * Update TLS certificate verification and trust roots to reject compromised emSign intermediates.

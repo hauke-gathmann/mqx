@@ -24,6 +24,8 @@ Playback shows each trace's duration from its first to last message. Right-click
 
 Open **Settings** with `Cmd/Ctrl+,` to choose a theme, set the topic history budget, and change the recordings folder.
 
+Settings also checks for updates when opened and shows the available version. Mac, Windows and AppImage users can choose to install an update there; DEB and RPM users update through their package manager or a downloaded package.
+
 **Topic history limit.** The RAM slider ranges from 64 MiB to 128 GiB, with a default of 512 MiB. Older extra messages drop first; each topic keeps at least its latest payload. This limit covers the in-memory topic store, not the whole process.
 
 Profiles and settings are stored under the `mqx` application directory. Theme is stored in `config.toml` (`[ui] theme = "dark" | "light" | "system"`). See [data locations and backups](docs/installation.md#data-credentials-and-logs) for platform-specific paths.

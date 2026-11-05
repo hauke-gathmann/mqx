@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { getVersion } from "@tauri-apps/api/app";
-  import { checkForUpdates, pickFolder } from "./api";
+  import { checkForUpdates, getUpdateStatus, pickFolder } from "./api";
   import { errorMessage } from "./types";
   import { THEMES, type Theme } from "./theme";
   import { RAM_LIMIT_MAX_GB, RAM_LIMIT_MIN_GB, ramLimitGb } from "./types";
@@ -36,6 +36,9 @@
   let pickError = $state<string | null>(null);
   let version = $state("");
   let checking = $state(false);
+  let installing = $state(false);
+  let updateStatus = $state<{ availableVersion: string | null; canInstall: boolean } | null>(null);
+  let updateError = $state<string | null>(null);
 
   $effect(() => {
     directory = recordDirectory;
@@ -62,22 +65,37 @@
     ramGb = Math.min(RAM_LIMIT_MAX_GB, Math.max(RAM_LIMIT_MIN_GB, ramLimitGb(ramLimitBytes)));
   });
 
-  async function checkUpdates() {
+  async function refreshUpdateStatus() {
     if (checking) {
       return;
     }
-    pickError = null;
+    updateError = null;
     checking = true;
     try {
-      await checkForUpdates();
+      updateStatus = await getUpdateStatus();
     } catch (err) {
-      pickError = errorMessage(err);
+      updateStatus = null;
+      updateError = errorMessage(err);
     } finally {
       checking = false;
     }
   }
 
+  async function installUpdate() {
+    if (installing) return;
+    installing = true;
+    try {
+      await checkForUpdates();
+      await refreshUpdateStatus();
+    } catch (err) {
+      updateError = errorMessage(err);
+    } finally {
+      installing = false;
+    }
+  }
+
   onMount(() => {
+    void refreshUpdateStatus();
     void getVersion()
       .then((value) => {
         version = value;
@@ -170,8 +188,26 @@
         {#if version}
           <p class="version">Version {version}</p>
         {/if}
-        <button type="button" disabled={busy || checking} onclick={() => void checkUpdates()}>
-          Check for Updates…
+        <p class="update-status" role="status">
+          {#if checking}
+            Checking for updates…
+          {:else if updateError}
+            Could not check for updates. Check your connection and try again.
+          {:else if updateStatus?.availableVersion}
+            Version {updateStatus.availableVersion} is available.
+          {:else if updateStatus}
+            You’re running the latest version.
+          {/if}
+        </p>
+        {#if !checking && updateStatus?.availableVersion && updateStatus.canInstall}
+          <button type="button" disabled={busy || installing} onclick={() => void installUpdate()}>
+            Update to {updateStatus.availableVersion}…
+          </button>
+        {:else if !checking && updateStatus?.availableVersion && !updateStatus.canInstall}
+          <p class="hint">Update using your package manager or download a package from the mqx releases page.</p>
+        {/if}
+        <button type="button" disabled={busy || checking || installing} onclick={() => void refreshUpdateStatus()}>
+          Check again
         </button>
         <p class="hint">
           Updates preserve your saved profiles. Stop playback and save any recording before updating.
@@ -244,6 +280,12 @@
     color: var(--fg);
     font-size: 13px;
     font-weight: 500;
+  }
+
+  .update-status {
+    margin: 0;
+    font-size: 13px;
+    color: var(--fg);
   }
 
   .updates button {

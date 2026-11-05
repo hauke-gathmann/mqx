@@ -119,6 +119,10 @@ export function checkForUpdates(): Promise<void> {
   return invoke<void>("checkForUpdates");
 }
 
+export function getUpdateStatus(): Promise<{ availableVersion: string | null; canInstall: boolean }> {
+  return invoke("getUpdateStatus");
+}
+
 export function setTheme(theme: Theme): Promise<UiSettings> {
   return invoke<UiSettings>("setTheme", { theme });
 }

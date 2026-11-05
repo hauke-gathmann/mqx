@@ -63,10 +63,16 @@ async fn tls_auth_record_save_replay_and_reconnect() {
             ..Default::default()
         },
         session: Default::default(),
-        subscriptions: vec![Subscription {
-            topic: "release/#".into(),
-            qos: 1,
-        }],
+        subscriptions: vec![
+            Subscription {
+                topic: "release/#".into(),
+                qos: 1,
+            },
+            Subscription {
+                topic: "/v1/#".into(),
+                qos: 1,
+            },
+        ],
         last_will: None,
         websocket_path: None,
     };
@@ -88,9 +94,10 @@ async fn tls_auth_record_save_replay_and_reconnect() {
     live.start_recording(directory.path().to_path_buf())
         .unwrap();
     assert!(live.has_unsaved_recording().unwrap());
-    let payloads: [(&str, &[u8]); 2] = [
+    let payloads: [(&str, &[u8]); 3] = [
         ("release/json", br#"{"temperature":21.5}"#),
         ("release/binary", &[0, 255, 1, 128]),
+        ("/v1/asd", b"leading slash"),
     ];
     for (topic, payload) in payloads {
         live.client()
@@ -98,7 +105,21 @@ async fn tls_auth_record_save_replay_and_reconnect() {
             .await
             .unwrap();
     }
-    wait_messages(&live, 2).await;
+    wait_messages(&live, 3).await;
+    {
+        let session = live.session().unwrap();
+        assert!(
+            session
+                .tree_children(&[])
+                .iter()
+                .any(|node| node.path.is_empty())
+        );
+        assert_eq!(session.tree_children(&["".into()])[0].path, "/v1");
+        assert_eq!(
+            session.tree_children(&["".into(), "v1".into()])[0].path,
+            "/v1/asd"
+        );
+    }
     assert_eq!(
         live.session()
             .unwrap()
@@ -110,7 +131,7 @@ async fn tls_auth_record_save_replay_and_reconnect() {
     );
     let (recorder, context) = live.take_recorder().unwrap().unwrap();
     let stopped = recorder.stop().unwrap();
-    assert_eq!(stopped.messages, 2);
+    assert_eq!(stopped.messages, 3);
     assert_eq!(stopped.dropped, 0);
     let header = RecordingHeader {
         kind: mqx_core::RECORDING_KIND.into(),
@@ -146,11 +167,11 @@ async fn tls_auth_record_save_replay_and_reconnect() {
         events_tx: live.events(),
     })
     .await;
-    wait_messages(&live, 4).await;
+    wait_messages(&live, 6).await;
     live.stop().await;
 
     let (reconnected, mut events) = LiveHandle::spawn(profile, password, &ui).unwrap();
     wait_status(&mut events, true).await;
-    wait_messages(&reconnected, 2).await;
+    wait_messages(&reconnected, 3).await;
     reconnected.stop().await;
 }

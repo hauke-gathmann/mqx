@@ -1,12 +1,40 @@
 use std::time::Duration;
 
+use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_updater::UpdaterExt;
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    available_version: Option<String>,
+    can_install: bool,
+}
+
+fn can_install_in_app() -> bool {
+    !cfg!(target_os = "linux") || std::env::var_os("APPIMAGE").is_some()
+}
+
+async fn check(app: &AppHandle) -> Result<Option<tauri_plugin_updater::Update>, String> {
+    let updater = app
+        .updater_builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| error.to_string())?;
+    updater.check().await.map_err(|error| error.to_string())
+}
+
+pub async fn update_status(app: &AppHandle) -> Result<UpdateStatus, String> {
+    let update = check(app).await?;
+    Ok(UpdateStatus {
+        available_version: update.map(|update| update.version),
+        can_install: can_install_in_app(),
+    })
+}
+
 pub async fn check_and_prompt(app: AppHandle) {
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_none() {
+    if !can_install_in_app() {
         show(
             &app,
             "Updates",
@@ -15,24 +43,7 @@ pub async fn check_and_prompt(app: AppHandle) {
         );
         return;
     }
-    let updater = match app
-        .updater_builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-    {
-        Ok(updater) => updater,
-        Err(error) => {
-            show(
-                &app,
-                "Check for Updates",
-                &unsigned_message(&error.to_string()),
-                MessageDialogKind::Info,
-            );
-            return;
-        }
-    };
-
-    match updater.check().await {
+    match check(&app).await {
         Ok(Some(mut update)) => {
             update.timeout = Some(Duration::from_secs(600));
             let notes = update.body.as_deref().unwrap_or("").trim().to_string();

@@ -182,6 +182,11 @@ pub async fn check_for_updates(app: AppHandle) {
     crate::updater::check_and_prompt(app).await;
 }
 
+#[tauri::command(rename = "getUpdateStatus")]
+pub async fn get_update_status(app: AppHandle) -> Result<crate::updater::UpdateStatus, String> {
+    crate::updater::update_status(&app).await
+}
+
 #[tauri::command(rename = "setTheme")]
 pub fn set_theme(state: State<AppState>, theme: String) -> Result<UiSettings, String> {
     persist_theme(&state, &theme)?;

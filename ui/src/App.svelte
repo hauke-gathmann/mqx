@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getVersion } from "@tauri-apps/api/app";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
   import {
@@ -23,6 +24,7 @@
   } from "./lib/api";
   import ConnectionPicker from "./lib/ConnectionPicker.svelte";
   import Explorer from "./lib/Explorer.svelte";
+  import GearIcon from "./lib/GearIcon.svelte";
   import Playback from "./lib/Playback.svelte";
   import ProfileEditor from "./lib/ProfileEditor.svelte";
   import Settings from "./lib/Settings.svelte";
@@ -79,6 +81,7 @@
   let ramLimitBytes = $state(DEFAULT_RAM_LIMIT_BYTES);
   let settingsOpen = $state(false);
   let settingsError = $state<string | null>(null);
+  let version = $state("");
   let recordDirectory = $state("");
   let recordStatus = $state<RecordStatus | null>(null);
   let savePrompt = $state<{ tempPath: string; name: string; error: string | null } | null>(null);
@@ -681,6 +684,14 @@
     const unlistens: UnlistenFn[] = [];
     let cancelled = false;
 
+    void getVersion()
+      .then((value) => {
+        version = value;
+      })
+      .catch(() => {
+        version = "unavailable";
+      });
+
     void (async () => {
       try {
         const statusUnlisten = await listen<SessionStatus>("session/status", (event) => {
@@ -877,7 +888,9 @@
             {recording ? "Stop recording" : "Record"}
           </button>
         {/if}
-        <button type="button" class="gear" aria-label="Settings" onclick={openSettings}>⚙</button>
+        <button type="button" class="gear" aria-label="Settings" onclick={openSettings}>
+          <GearIcon />
+        </button>
         <button type="button" disabled={busy} onclick={() => void disconnect()}>Disconnect</button>
       </div>
     </header>
@@ -908,8 +921,11 @@
     >
       Playback
     </button>
+    <span class="app-version">Version {version || "…"}</span>
     {#if !showHeader}
-      <button type="button" class="gear" aria-label="Settings" onclick={openSettings}>⚙</button>
+      <button type="button" class="gear" aria-label="Settings" onclick={openSettings}>
+        <GearIcon />
+      </button>
     {/if}
   </nav>
 
@@ -1144,11 +1160,24 @@
   }
 
   .tabs .gear {
-    margin-left: auto;
-    width: 2rem;
-    padding: 0.35rem 0;
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
+  }
+
+  .app-version {
+    margin-left: auto;
+    color: var(--fg-muted);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .gear {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 
   .replay-label {
@@ -1185,8 +1214,9 @@
   }
 
   header button.gear {
-    width: 2rem;
-    padding: 0.35rem 0;
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
     color: var(--fg-muted);
   }
 

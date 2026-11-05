@@ -155,9 +155,13 @@
               <span class="chevron spacer"></span>
             {/if}
             <span class="label">
-              {#each chars(row.node.segment, marks) as part, i (i)}
-                {#if part.on}<mark>{part.ch}</mark>{:else}{part.ch}{/if}
-              {/each}
+              {#if row.node.segment === ""}
+                {row.path === "" ? "/" : "(empty)"}
+              {:else}
+                {#each chars(row.node.segment, marks) as part, i (i)}
+                  {#if part.on}<mark>{part.ch}</mark>{:else}{part.ch}{/if}
+                {/each}
+              {/if}
             </span>
             {#if row.node.hasPayload && row.node.format === "json"}
               <span class="badge">JSON</span>

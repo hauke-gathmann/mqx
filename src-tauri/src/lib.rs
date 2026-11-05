@@ -90,6 +90,7 @@ pub fn run() {
             commands::jq_history,
             commands::get_settings,
             commands::check_for_updates,
+            commands::get_update_status,
             commands::set_theme,
             commands::set_ram_limit,
             commands::start_recording,

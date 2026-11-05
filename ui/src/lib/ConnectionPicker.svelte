@@ -1,4 +1,5 @@
 <script lang="ts">
+  import GearIcon from "./GearIcon.svelte";
   import {
     DEFAULT_PROFILE,
     brokerLabel,
@@ -95,7 +96,9 @@
   <header>
     <h2>Connections</h2>
     <div class="header-actions">
-      <button type="button" class="gear" aria-label="Settings" onclick={onsettings}>⚙</button>
+      <button type="button" class="gear" aria-label="Settings" onclick={onsettings}>
+        <GearIcon />
+      </button>
       <button type="button" class="new" disabled={busy} onclick={onnew}>+ New</button>
     </div>
   </header>
@@ -236,8 +239,11 @@
   }
 
   .gear {
-    width: 2.1rem;
-    height: 2.1rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
     color: var(--fg-muted);
   }
 

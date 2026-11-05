@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## 0.3.1
+
+* Fix Explorer expansion for topics with leading or repeated slashes.
+* Show the running version and automatically check for updates in Settings.
+* Make the Settings icons easier to see.
+
 ## 0.3.0
 
 * Show each trace's duration from its first to last message.

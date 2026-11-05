@@ -8,6 +8,7 @@
     "build": "node scripts/notices.mjs && vite build --config ui/vite.config.ts",
     "preview": "vite preview --config ui/vite.config.ts",
     "check": "svelte-check --tsconfig ui/tsconfig.app.json && tsc -p ui/tsconfig.node.json",
+    "test:ui": "node --test ui/tests/treeState.test.mjs",
     "tauri": "tauri",
     "test:release": "python3 -m unittest discover -s tests -p \"test_*.py\""
   },

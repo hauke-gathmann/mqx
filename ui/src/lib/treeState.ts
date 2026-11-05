@@ -1,6 +1,8 @@
 import type { SearchHit, TreeNodeDto } from "./types";
 
-export const ROOT = "";
+// MQTT topic names cannot contain NUL. Keep the invisible root distinct from
+// the valid empty first segment of a topic such as /v1/status.
+export const ROOT = "\0";
 export const FRESH_UNTIL_MS = 500;
 export const STALE_AFTER_MS = 5000;
 export const ROW_HEIGHT = 28;
@@ -33,7 +35,7 @@ export function parentPath(path: string): string {
 }
 
 export function pathSegments(path: string): string[] {
-  return path ? path.split("/") : [];
+  return path === ROOT ? [] : path.split("/");
 }
 
 export function ancestorPaths(path: string): string[] {

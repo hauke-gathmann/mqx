@@ -250,7 +250,7 @@ impl TopicTree {
             return UpsertOutcome::Deleted { pruned };
         }
         let segments: Vec<&str> = topic.split('/').collect();
-        delete_walk(&mut self.root, &segments, "", &mut pruned);
+        delete_walk(&mut self.root, &segments, None, &mut pruned);
         UpsertOutcome::Deleted { pruned }
     }
 
@@ -380,17 +380,21 @@ impl Leaf {
     }
 }
 
-fn delete_walk(node: &mut Node, segments: &[&str], prefix: &str, pruned: &mut Vec<String>) -> bool {
+fn delete_walk(
+    node: &mut Node,
+    segments: &[&str],
+    prefix: Option<&str>,
+    pruned: &mut Vec<String>,
+) -> bool {
     if let Some((segment, rest)) = segments.split_first() {
-        let child_path = if prefix.is_empty() {
-            (*segment).to_string()
-        } else {
-            format!("{prefix}/{segment}")
+        let child_path = match prefix {
+            None => (*segment).to_string(),
+            Some(prefix) => format!("{prefix}/{segment}"),
         };
         let prune_child = node
             .children
             .get_mut(*segment)
-            .is_some_and(|child| delete_walk(child, rest, &child_path, pruned));
+            .is_some_and(|child| delete_walk(child, rest, Some(&child_path), pruned));
         if prune_child {
             node.children.remove(*segment);
             pruned.push(child_path);

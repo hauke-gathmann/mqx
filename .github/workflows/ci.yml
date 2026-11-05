@@ -54,6 +54,7 @@ jobs:
           sudo apt-get install -y mosquitto mosquitto-clients
           python3 scripts/smoke-broker.py
       - run: npm run check
+      - run: npm run test:ui
       - run: python3 scripts/release.py version
       - name: Installer and release tests
         if: runner.os != 'Windows'

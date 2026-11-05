@@ -314,7 +314,7 @@
       loading.add(path);
       loading = new Set(loading);
       try {
-        const kids = await treeChildren(path ? pathSegments(path) : []);
+        const kids = await treeChildren(pathSegments(path));
         mutate((model) => setChildren(model, path, kids));
       } finally {
         loading.delete(path);

@@ -343,13 +343,17 @@ impl Session {
 
     pub fn tree_children(&self, path: &[String]) -> Vec<TreeNodeDto> {
         let joined = path.join("/");
-        let Some(node) = self.tree.node(&joined) else {
-            return Vec::new();
-        };
+        let mut node = self.tree.root();
+        for segment in path {
+            let Some(child) = node.children.get(segment) else {
+                return Vec::new();
+            };
+            node = child;
+        }
         node.children
             .values()
             .map(|child| {
-                let child_path = if joined.is_empty() {
+                let child_path = if path.is_empty() {
                     child.segment.clone()
                 } else {
                     format!("{joined}/{}", child.segment)
@@ -457,10 +461,20 @@ impl Session {
                 deletes = pruned;
                 if self.tree.node(&topic).is_some() {
                     upserts.extend(self.collect_path_dtos(&topic));
-                } else if let Some(parent) = parent_path(&topic)
-                    && self.tree.node(parent).is_some()
-                {
-                    upserts.extend(self.collect_path_dtos(parent));
+                } else {
+                    let mut ancestor = parent_path(&topic);
+                    while let Some(path) = ancestor {
+                        let exists = if path.is_empty() {
+                            self.tree.root().children.contains_key("")
+                        } else {
+                            self.tree.node(path).is_some()
+                        };
+                        if exists {
+                            upserts.extend(self.collect_path_dtos(path));
+                            break;
+                        }
+                        ancestor = parent_path(path);
+                    }
                 }
             }
         }
@@ -497,19 +511,19 @@ impl Session {
     }
 
     fn collect_path_dtos(&self, topic: &str) -> Vec<TreeNodeDto> {
-        if topic.is_empty() {
-            return Vec::new();
-        }
         let mut out = Vec::new();
         let mut acc = String::new();
-        for segment in topic.split('/') {
-            if !acc.is_empty() {
+        let mut node = self.tree.root();
+        for (index, segment) in topic.split('/').enumerate() {
+            let Some(child) = node.children.get(segment) else {
+                break;
+            };
+            node = child;
+            if index > 0 {
                 acc.push('/');
             }
             acc.push_str(segment);
-            if let Some(dto) = self.node_dto(&acc) {
-                out.push(dto);
-            }
+            out.push(self.node_to_dto(&acc, node));
         }
         out
     }
@@ -631,6 +645,55 @@ mod tests {
 
         let living = session.tree_children(&["home".into()]);
         assert_eq!(living[0].path, "home/living");
+    }
+
+    #[test]
+    fn leading_and_empty_topic_levels_remain_distinct_from_root() {
+        let mut session = session();
+        session.ingest(msg("v1/normal", b"normal", false));
+        let result = session.ingest(msg("/v1/asd", b"leading", false));
+        assert_eq!(
+            result
+                .upserts
+                .iter()
+                .map(|node| node.path.as_str())
+                .collect::<Vec<_>>(),
+            ["", "/v1", "/v1/asd"]
+        );
+        session.ingest(msg("//double/", b"double", false));
+
+        let roots = session.tree_children(&[]);
+        assert_eq!(
+            roots
+                .iter()
+                .map(|node| node.path.as_str())
+                .collect::<Vec<_>>(),
+            ["", "v1"]
+        );
+        assert_eq!(roots[0].child_count, 2);
+        let leading = session.tree_children(&["".into()]);
+        assert_eq!(
+            leading
+                .iter()
+                .map(|node| node.path.as_str())
+                .collect::<Vec<_>>(),
+            ["/", "/v1"]
+        );
+        let child = session.tree_children(&["".into(), "v1".into()]);
+        assert_eq!(child[0].path, "/v1/asd");
+        assert!(child[0].has_payload);
+        let double = session.tree_children(&["".into(), "".into(), "double".into()]);
+        assert_eq!(double[0].path, "//double/");
+        assert!(double[0].has_payload);
+
+        let removed = session.ingest(msg("/v1/asd", b"", true));
+        assert_eq!(removed.deletes, ["/v1/asd", "/v1"]);
+        assert_eq!(removed.upserts[0].path, "");
+        assert_eq!(removed.upserts[0].child_count, 1);
+        assert_eq!(session.tree_children(&["".into()])[0].path, "/");
+        let removed = session.ingest(msg("//double/", b"", true));
+        assert_eq!(removed.deletes, ["//double/", "//double", "/", ""]);
+        assert_eq!(session.tree_children(&[])[0].path, "v1");
     }
 
     #[test]
